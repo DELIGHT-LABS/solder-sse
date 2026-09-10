@@ -1,0 +1,23 @@
+{
+	"name": "solder-sse-workspace",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"client/*"
+	],
+	"scripts": {
+		"test": "vitest run",
+		"check": "tsc -p tsconfig.json",
+		"lint": "prettier --check .",
+		"format": "prettier --write .",
+		"build": "npm run build --workspaces"
+	},
+	"devDependencies": {
+		"@types/node": "^26.4.1",
+		"jsdom": "^30.0.1",
+		"prettier": "^3.9.6",
+		"solid-js": "2.0.0-rc.6",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.0"
+	}
+}

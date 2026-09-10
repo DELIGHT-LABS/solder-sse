@@ -1,0 +1,4 @@
+id: 
+event: resync
+data: {"earliest_seq":47900,"reason":"expired"}
+

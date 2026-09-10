@@ -1,0 +1,32 @@
+{
+	"name": "solder-sse",
+	"version": "0.1.0",
+	"description": "Drop-tolerant, resumable Server-Sent Events client: shared connections, watchdog with jittered backoff, eager reconnect, dead-man ping, Last-Event-ID resume, resync — framework-agnostic.",
+	"license": "MIT",
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"development": "./src/index.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"sse",
+		"server-sent-events",
+		"eventsource",
+		"resumable",
+		"reconnect"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json"
+	}
+}

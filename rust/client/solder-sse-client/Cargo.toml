@@ -1,0 +1,24 @@
+[package]
+name = "solder-sse-client"
+version = "0.1.0"
+edition = "2021"
+description = "A resumable SSE client on reqwest: Last-Event-ID resume, retry hints, jittered backoff, dead-man ping, resync — the client half of the solder-sse profile for Rust programs (canaries, CLIs, services)"
+license = "MIT"
+repository = "https://github.com/DELIGHT-LABS/dosi-rak"
+keywords = ["sse", "server-sent-events", "eventsource", "client", "resumable"]
+categories = ["web-programming::http-client", "asynchronous"]
+
+[dependencies]
+solder-sse = { path = "../../core/solder-sse", version = "0.1.0" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["stream"] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls"] }
+solder-sse-axum = { path = "../../server/solder-sse-axum" }
+tokio = { version = "1", features = ["full"] }

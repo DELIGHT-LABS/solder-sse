@@ -1,0 +1,23 @@
+[package]
+name = "solder-sse-axum"
+version = "0.1.0"
+edition = "2021"
+description = "axum adapter for solder-sse: a Resume extractor and an IntoResponse for resumable SSE"
+license = "MIT"
+repository = "https://github.com/DELIGHT-LABS/dosi-rak"
+keywords = ["sse", "server-sent-events", "axum", "resumable"]
+categories = ["web-programming"]
+
+[dependencies]
+solder-sse = { path = "../../core/solder-sse", version = "0.1.0" }
+axum-core = "0.5"
+bytes = "1"
+futures-core = "0.3"
+http = "1"
+
+[dev-dependencies]
+axum = "0.8"
+futures-util = "0.3"
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+tower = { version = "0.5", features = ["util"] }
