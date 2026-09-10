@@ -2,6 +2,7 @@
 name = "solder-sse-client"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "A resumable SSE client on reqwest: Last-Event-ID resume, retry hints, jittered backoff, dead-man ping, resync, the server's hints — the client half of the solder-sse profile for Rust programs"
 license.workspace = true
 repository.workspace = true

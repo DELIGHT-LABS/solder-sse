@@ -30,7 +30,7 @@ while let Some(msg) = sub.recv().await {
 }
 ```
 
-`tests/resume.rs` is the existence proof: a server that ends every stream after five events,
-rotates it on a timer, or resets the connection outright (a proxy timeout in miniature), a producer
-that never pauses — and the client still sees every sequence exactly once; a server restart is
-one `resync`, not a silent gap. License: MIT.
+`tests/resume.rs` is the existence proof, against `solder-sse-testkit`: a server that ends every
+stream after five events, rotates it on a timer, or resets the connection outright (a proxy timeout
+in miniature), a producer that never pauses — and the client still sees every event exactly once;
+a server restart is one `resync`, not a silent gap. License: MIT or Apache-2.0, at your option.

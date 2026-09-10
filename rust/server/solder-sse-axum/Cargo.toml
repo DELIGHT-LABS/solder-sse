@@ -2,6 +2,7 @@
 name = "solder-sse-axum"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "axum adapter for solder-sse: a Resume extractor and an IntoResponse for resumable SSE"
 license.workspace = true
 repository.workspace = true

@@ -15,10 +15,10 @@
 // Layout: `registry` (subscribers, linger, one environment listener pair)
 // → `connection` (the per-URL state machine) → `protocol` (the wire
 // profile and pure helpers) and `env` (injectable globals).
-export { createSolder } from './registry.ts';
-export type { Handlers, Solder, SolderOptions, StreamInfo, SubscribeOptions } from './registry.ts';
-export type { ConnectionInfo, Policy, StreamStatus } from './connection.ts';
-export { DEFAULT_DEADMAN_MS } from './connection.ts';
+export { createSolder } from './registry.js';
+export type { Handlers, Solder, SolderOptions, StreamInfo, SubscribeOptions } from './registry.js';
+export type { ConnectionInfo, Policy, StreamStatus } from './connection.js';
+export { DEFAULT_DEADMAN_MS } from './connection.js';
 export {
 	DEFAULT_LINK,
 	linkAt,
@@ -27,8 +27,8 @@ export {
 	type LinkPolicy,
 	type LinkState,
 	type LinkTrack
-} from './link.ts';
-export type { Environment, OnlineLike, VisibilityLike } from './env.ts';
+} from './link.js';
+export type { Environment, OnlineLike, VisibilityLike } from './env.js';
 export {
 	deadmanFor,
 	makeFrame,
@@ -41,4 +41,4 @@ export {
 	type Frame,
 	type PingHints,
 	type ResyncInfo
-} from './protocol.ts';
+} from './protocol.js';

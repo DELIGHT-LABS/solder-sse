@@ -13,7 +13,7 @@
 // environment says "try now", and resumes from the last event id so the
 // server can replay the gap.
 
-import type { ResolvedEnv } from './env.ts';
+import type { ResolvedEnv } from './env.js';
 import {
 	deadmanFor,
 	makeFrame,
@@ -24,7 +24,7 @@ import {
 	withResume,
 	type Frame,
 	type ResyncInfo
-} from './protocol.ts';
+} from './protocol.js';
 
 export type StreamStatus = 'connecting' | 'live' | 'retrying';
 

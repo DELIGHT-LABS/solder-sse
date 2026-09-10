@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_LINK, linkAt, nextDeadline, trackStatus, type LinkTrack } from './link.ts';
+import { DEFAULT_LINK, linkAt, nextDeadline, trackStatus, type LinkTrack } from './link.js';
 
 const P = DEFAULT_LINK;
 const at = (track: LinkTrack, t: number) => linkAt(track, t, P);

@@ -21,7 +21,7 @@ speaks the same profile replays the gap, and surfaces the two things a consumer 
 | Resume                        | The last event id is remembered; a watchdog reopen appends `?last_event_id=`.                                                   |
 | Resync                        | A server `resync` event is delivered and the rejected cursor is cleared.                                                        |
 | Reconnect edge                | `onReconnect(resumed)`: a fresh reopen (no cursor) is the consumer's cue to poll once; a resumed one is replayed by the server. |
-| Rotation (profile v1.2)       | A server that ends healthy streams on purpose announces the age in `ping` (`max_age`); kept as `maxAgeMs`, policy unchanged.    |
+| Rotation                      | A server that ends healthy streams on purpose announces the age in `ping` (`max_age`); kept as `maxAgeMs`, policy unchanged.    |
 
 Everything the core touches (`EventSource`, `document`, `window`, clock, randomness) is
 injectable, so it runs in workers and tests.
@@ -33,13 +33,13 @@ import { createSolder } from 'solder-sse';
 
 const solder = createSolder();
 const off = solder.subscribe(
-	'/api/v1/screens/a/stream',
+	'/topic/stream',
 	{
 		// One Frame per event for every subscriber; json() parses the body once.
 		onEvent: (frame) => {
 			if (frame.name !== 'new_message') return;
-			const event = frame.json<{ seq: number }>();
-			console.log(frame.lastEventId, event.seq);
+			const event = frame.json<{ text: string }>();
+			console.log(frame.lastEventId, event.text);
 		},
 		onStatus: (s) => {}, // 'connecting' | 'live' | 'retrying' — what the transport did
 		onLink: (l) => {}, // 'connecting' | 'live' | 'reconnecting' | 'offline' — what to show
@@ -50,7 +50,7 @@ const off = solder.subscribe(
 	},
 	{ events: ['new_message', 'now_displaying'] }
 );
-solder.inspect('/api/v1/screens/a/stream'); // status, link, cursor, opens, deadmanMs, maxAgeMs …
+solder.inspect('/topic/stream'); // status, link, cursor, opens, deadmanMs, maxAgeMs …
 solder.dispose(); // hot-replacement / test teardown
 ```
 
@@ -79,13 +79,20 @@ interval per connection, not a timer reset per event.
 
 ## The profile
 
-The server side lives in the Rust crate `solder-sse`: every event carries a monotonic `id:`,
-the server honours `Last-Event-ID` (header) or `last_event_id` (query) by replaying
-`seq > id`, answers `event: resync` when it cannot, sends `event: ping` at connect and every
-15 s, a jittered `retry:` hint, and `503 + Retry-After` when the stream cannot be opened. A
-plain SSE server works too; the resume and dead-man features simply stay dormant.
+The contract is `spec/profile-v1.md` at the repository root; the server side for Rust is
+`solder-sse-server`. Every event carries an `id:` — a cursor the server's log issues, opaque to
+this package, which only echoes it; the server honours `Last-Event-ID` (header) or
+`last_event_id` (query) by replaying what follows the cursor, answers `event: resync` when it
+cannot, sends `event: ping` at connect and every 15 s, a jittered `retry:` hint, and
+`503 + Retry-After` when the stream cannot be opened. A plain SSE server works too; the resume
+and dead-man features simply stay dormant.
 
 ## Building
 
-`exports` serve the TypeScript source under the `development` condition (Vite dev, Vitest)
-and `dist/` otherwise; `npm run build` in this package emits `dist/` with declarations.
+The package ships `dist/` only: ES modules, declarations and source maps from `pnpm run build`
+(`src/` rides along for the maps). A consumer never compiles this package's TypeScript under its
+own settings. Inside the repository the root tsconfig's `paths` and a vitest alias resolve
+`solder-sse` to its source, so checking, linting and testing need no build; `tsconfig.build.json`
+is for emitting `dist/`.
+
+License: MIT or Apache-2.0, at your option.

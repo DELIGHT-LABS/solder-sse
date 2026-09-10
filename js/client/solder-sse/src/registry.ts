@@ -3,7 +3,7 @@
 // environment listeners (`online`, `visibilitychange`) fanning "try now"
 // out to every connection.
 
-import { resolveEnv, type Environment } from './env.ts';
+import { resolveEnv, type Environment } from './env.js';
 import {
 	isReserved,
 	openConnection,
@@ -11,8 +11,8 @@ import {
 	type ConnectionInfo,
 	type Policy,
 	type StreamStatus
-} from './connection.ts';
-import { RESUME_QUERY, type Frame, type ResyncInfo } from './protocol.ts';
+} from './connection.js';
+import { RESUME_QUERY, type Frame, type ResyncInfo } from './protocol.js';
 import {
 	DEFAULT_LINK,
 	linkAt,
@@ -21,7 +21,7 @@ import {
 	type LinkPolicy,
 	type LinkState,
 	type LinkTrack
-} from './link.ts';
+} from './link.js';
 
 export interface Handlers {
 	/** A named event (or an unnamed `message`). `frame.json()` parses the

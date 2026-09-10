@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parsePing, parseResync, PING, RESYNC, RESUME_QUERY, withResume } from './protocol.ts';
+import { parsePing, parseResync, PING, RESYNC, RESUME_QUERY, withResume } from './protocol.js';
 
 // `spec/` at the repository root — the same files every implementation, in
 // every language, is checked against. From this module's directory when

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_DEADMAN_MS } from './connection.ts';
-import { createSolder, type Handlers, type Solder } from './registry.ts';
+import { DEFAULT_DEADMAN_MS } from './connection.js';
+import { createSolder, type Handlers, type Solder } from './registry.js';
 
 // Minimal EventSource double — enough to drive named-event dispatch, the
 // transport-status callbacks, and the give-up (CLOSED) path the watchdog

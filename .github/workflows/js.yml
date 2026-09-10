@@ -1,0 +1,32 @@
+name: js
+
+on:
+  push:
+    branches: [main]
+    paths: ["js/**", "spec/**", ".github/workflows/js.yml"]
+  pull_request:
+    paths: ["js/**", "spec/**", ".github/workflows/js.yml"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v7
+      # The pnpm version is the one js/package.json's packageManager names;
+      # an action step does not take the job's working-directory.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: js/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: js/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run check
+      - run: pnpm test
+      - run: pnpm run build

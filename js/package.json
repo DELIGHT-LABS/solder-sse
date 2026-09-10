@@ -2,21 +2,20 @@
 	"name": "solder-sse-workspace",
 	"private": true,
 	"type": "module",
-	"workspaces": [
-		"client/*"
-	],
+	"packageManager": "pnpm@11.24.0",
 	"scripts": {
 		"test": "vitest run",
 		"check": "tsc -p tsconfig.json",
-		"lint": "prettier --check .",
+		"lint": "prettier --check . && oxlint --type-aware",
 		"format": "prettier --write .",
-		"build": "npm run build --workspaces"
+		"build": "pnpm -r run build"
 	},
 	"devDependencies": {
 		"@types/node": "^26.4.1",
 		"jsdom": "^30.0.1",
+		"oxlint": "^1.82.0",
+		"oxlint-tsgolint": "^7.0.2001",
 		"prettier": "^3.9.6",
-		"solid-js": "2.0.0-rc.6",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.0"
 	}

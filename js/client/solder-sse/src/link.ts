@@ -11,7 +11,7 @@
 // registry keeps one track per connection and re-evaluates on the
 // deadlines these functions name.
 
-import type { StreamStatus } from './connection.ts';
+import type { StreamStatus } from './connection.js';
 
 export type LinkState = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
