@@ -7,40 +7,46 @@ import type { Handlers, LinkState, Solder, StreamStatus, SubscribeOptions } from
 export interface Stream {
 	/** The transport status — what the connection did. */
 	status: Accessor<StreamStatus>;
-	/** The link verdict — what a surface shows; `null` before the first. */
-	link: Accessor<LinkState | null>;
-	lastEventId: Accessor<string | null>;
+	/** The link verdict — what a surface shows; undefined before the first. */
+	link: Accessor<LinkState | undefined>;
+	/** The cursor in force on the current stream: seeded from the registry
+	 * when the URL is (re)entered, moved by every frame, cleared by a
+	 * `resync` and by a URL change. Opaque — for display and tests. */
+	lastEventId: Accessor<string | undefined>;
 }
 
 export interface StreamOptions extends SubscribeOptions {
-	/** Runs when the URL changes (and once when it first becomes non-null),
+	/** Runs when the URL changes (and once when it first becomes defined),
 	 * BEFORE subscribing to the new one — the place to drop state derived
 	 * from the previous stream so a screen never shows another's figures. */
-	onSwitch?: (from: string | null, to: string | null) => void;
+	onSwitch?: (from: string | undefined, to: string | undefined) => void;
 }
 
-/** Subscribe for as long as the owner lives and `url()` is non-null; a URL
+/** Subscribe for as long as the owner lives and `url()` is defined; a URL
  * change unsubscribes and subscribes again (the registry keeps the old
  * source lingering, so a hop back re-attaches without a reconnect). */
 export function createStream(
 	solder: Solder,
-	url: Accessor<string | null>,
+	url: Accessor<string | undefined>,
 	handlers: Handlers,
 	options: StreamOptions = {}
 ): Stream {
 	const [status, setStatus] = createSignal<StreamStatus>('connecting');
-	const [link, setLink] = createSignal<LinkState | null>(null);
-	const [lastEventId, setLastEventId] = createSignal<string | null>(null);
-	let current: string | null = null;
+	const [link, setLink] = createSignal<LinkState | undefined>();
+	const [lastEventId, setLastEventId] = createSignal<string | undefined>();
+	let current: string | undefined;
 	// Solid 2.0 two-phase effect: the apply's return value is the cleanup,
 	// run on dispose and before the next apply.
 	createEffect(url, (next) => {
 		if (next !== current) {
 			options.onSwitch?.(current, next);
 			current = next;
-			setLink(null);
+			setLink(undefined);
+			// A cursor belongs to one stream. The new URL's may still be in
+			// the registry (a lingering source a hop back re-attaches to).
+			setLastEventId(next === undefined ? undefined : solder.inspect(next)?.lastEventId);
 		}
-		if (next == null) return;
+		if (next === undefined) return;
 		return solder.subscribe(
 			next,
 			{
@@ -54,8 +60,12 @@ export function createStream(
 					handlers.onLink?.(l);
 				},
 				onEvent: (frame) => {
-					if (frame.lastEventId != null) setLastEventId(frame.lastEventId);
+					setLastEventId(frame.lastEventId);
 					handlers.onEvent?.(frame);
+				},
+				onResync: (info) => {
+					setLastEventId(undefined);
+					handlers.onResync?.(info);
 				}
 			},
 			{ events: options.events }

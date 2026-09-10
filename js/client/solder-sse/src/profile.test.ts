@@ -88,7 +88,7 @@ describe('profile v1', () => {
 		const pingMaxAge = read('ping-max-age');
 		expect(pingMaxAge).toEqual([{ event: 'ping', data: '{"every":15,"max_age":30}' }]);
 		expect(parsePing(pingMaxAge[0].data)).toEqual({ everyMs: 15_000, maxAgeMs: 30_000 });
-		expect(parsePing('{"every":15}')).toEqual({ everyMs: 15_000, maxAgeMs: null });
+		expect(parsePing('{"every":15}')).toEqual({ everyMs: 15_000, maxAgeMs: undefined });
 		expect(readdirSync(`${spec}vectors`).sort()).toEqual([
 			'connect.sse',
 			'event.sse',

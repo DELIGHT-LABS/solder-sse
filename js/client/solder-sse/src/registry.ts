@@ -36,18 +36,20 @@ export interface Handlers {
 	/** The server could not replay the gap: reload a snapshot (poll once). */
 	onResync?: (info: ResyncInfo) => void;
 	/** The retrying → live edge — never the first open, never the status
-	 * replay to a late joiner. `resumed` is true when the source reopened
-	 * with the cursor, so a server speaking the profile replays the gap
-	 * (and says `resync` when it cannot); a consumer that trusts replay
-	 * catches up — polls once — only when `!resumed`. */
+	 * replay to a late joiner. `resumed` is true when the source opened
+	 * with the cursor (`ConnectionInfo.resumed`), so a server speaking the
+	 * profile replays the gap (and says `resync` when it cannot); a
+	 * consumer that trusts replay catches up — polls once — only when
+	 * `!resumed`. */
 	onReconnect?: (resumed: boolean) => void;
 	onPing?: () => void;
 }
 
 export interface SubscribeOptions {
-	/** Named events to listen for. `message`, `ping` and `resync` are always
-	 * wired; a server-sent `error` event that carries data is delivered as
-	 * a frame named `error`. Names are refcounted across subscribers. */
+	/** Named events to listen for. The unnamed `message`, `ping` and
+	 * `resync` are always wired (listing them changes nothing); a
+	 * server-sent `error` event that carries data is delivered as a frame
+	 * named `error`. Names are refcounted across subscribers. */
 	events?: readonly string[];
 }
 
@@ -77,8 +79,8 @@ export interface SolderOptions extends Environment {
 
 /** A read-only view of one shared stream, for debugging and tests. */
 export interface StreamInfo extends ConnectionInfo {
-	/** The current link verdict (`null` before the first). */
-	link: LinkState | null;
+	/** The current link verdict; undefined before the first. */
+	link: LinkState | undefined;
 	subscribers: number;
 	/** Named events currently wired. */
 	events: string[];
@@ -91,7 +93,8 @@ export interface Solder {
 	/** Collapse a pending backoff into an immediate reconnect (all streams,
 	 * or one). A live stream ignores it. */
 	nudge(url?: string): void;
-	inspect(url: string): StreamInfo | null;
+	/** The stream at `url`, if there is one. */
+	inspect(url: string): StreamInfo | undefined;
 	/** Close every stream now (no linger) and drop the environment
 	 * listeners — for module hot-replacement and test teardown. Subscribers
 	 * are not notified; the registry stays usable afterwards. */
@@ -106,18 +109,24 @@ const DEFAULTS = {
 	resume: { query: RESUME_QUERY }
 } as const;
 
+/** One `subscribe` call. A record per call, not per handlers object: the
+ * same object may subscribe twice, and each unsubscribe releases its own. */
+interface Registration {
+	handlers: Handlers;
+	names: readonly string[];
+}
+
 interface Entry {
 	conn: Connection;
-	/** Each subscriber with the event names it asked for. */
-	subscribers: Map<Handlers, readonly string[]>;
+	subscribers: Set<Registration>;
 	/** Refcount per wired name, so a name is unwired when its last
 	 * subscriber leaves. */
 	names: Map<string, number>;
 	linger?: ReturnType<typeof setTimeout>;
 	/** The link track and its last verdict; `deadline` re-evaluates when a
 	 * grace or offline window passes without a status report. */
-	track: LinkTrack | null;
-	link: LinkState | null;
+	track: LinkTrack | undefined;
+	link: LinkState | undefined;
 	deadline?: ReturnType<typeof setTimeout>;
 	/** A drop has been reported and the stream is not back yet: the next
 	 * `live` is a reconnect. */
@@ -160,15 +169,18 @@ export function createSolder(options: SolderOptions = {}): Solder {
 		env.visibility()?.removeEventListener('visibilitychange', onVisible);
 	};
 
-	// One subscriber's throw must not starve the others of the event.
-	const fanOut = (entry: Entry, fn: (h: Handlers) => void) => {
-		for (const h of entry.subscribers.keys()) {
-			try {
-				fn(h);
-			} catch (e) {
-				console.error('[solder-sse] subscriber threw', e);
-			}
+	// A subscriber's throw is its own: reported, never the registry's — the
+	// others still get the event, and a late joiner whose replay throws still
+	// gets its unsubscribe back.
+	const guarded = (fn: () => void) => {
+		try {
+			fn();
+		} catch (e) {
+			console.error('[solder-sse] subscriber threw', e);
 		}
+	};
+	const fanOut = (entry: Entry, fn: (h: Handlers) => void) => {
+		for (const { handlers } of entry.subscribers) guarded(() => fn(handlers));
 	};
 
 	// Re-judge the link now and arm the next deadline; a changed verdict
@@ -184,16 +196,19 @@ export function createSolder(options: SolderOptions = {}): Solder {
 			if (link) fanOut(entry, (h) => h.onLink?.(link));
 		}
 		const at = nextDeadline(entry.track, now, linkPolicy);
-		if (at != null) entry.deadline = setTimeout(() => judge(entry), Math.max(0, at - now));
+		if (at !== undefined) entry.deadline = setTimeout(() => judge(entry), Math.max(0, at - now));
 	};
 
 	const create = (url: string, names: readonly string[]): Entry => {
+		// The connection reports through its sink from the constructor on (an
+		// EventSource that throws reports 'retrying' at once), so the entry the
+		// sink writes to exists first and takes the connection a line later.
 		const entry: Entry = {
 			conn: undefined as unknown as Connection,
-			subscribers: new Map(),
+			subscribers: new Set(),
 			names: new Map(),
-			track: null,
-			link: null,
+			track: undefined,
+			link: undefined,
 			down: false
 		};
 		entry.conn = openConnection(url, names, policy, env, {
@@ -203,9 +218,8 @@ export function createSolder(options: SolderOptions = {}): Solder {
 				if (status === 'retrying') entry.down = true;
 				else if (status === 'live' && entry.down) {
 					entry.down = false;
-					// The cursor in force when the source opened is the one it
-					// carried (no frame of the new source has arrived yet).
-					const resumed = entry.conn.info().lastEventId != null;
+					// The connection knows what its open carried.
+					const resumed = entry.conn.info().resumed;
 					fanOut(entry, (h) => h.onReconnect?.(resumed));
 				}
 				judge(entry);
@@ -216,7 +230,7 @@ export function createSolder(options: SolderOptions = {}): Solder {
 		});
 		// The connection reports no status for its initial 'connecting' (it is
 		// the state it starts in): seed the track from it and arm the grace.
-		entry.track = trackStatus(null, entry.conn.info().status, env.now());
+		entry.track = trackStatus(undefined, entry.conn.info().status, env.now());
 		judge(entry);
 		entries.set(url, entry);
 		listenEnvironment();
@@ -247,14 +261,16 @@ export function createSolder(options: SolderOptions = {}): Solder {
 			const names = [...new Set(options.events ?? [])].filter((n) => !isReserved(n));
 			const entry = entries.get(url) ?? create(url, names);
 			clearTimeout(entry.linger);
-			entry.subscribers.set(handlers, names);
+			const registration: Registration = { handlers, names };
+			entry.subscribers.add(registration);
 			retain(entry, names);
 			// A late joiner must not sit on the default 'connecting' while the
 			// shared source is already live — replay the current status (and
 			// the link verdict, when there is one)…
 			const status = entry.conn.info().status;
-			handlers.onStatus?.(status);
-			if (entry.link) handlers.onLink?.(entry.link);
+			const link = entry.link;
+			guarded(() => handlers.onStatus?.(status));
+			if (link) guarded(() => handlers.onLink?.(link));
 			// …and a page (re)entering mid-backoff is the right moment to try
 			// NOW instead of finishing a 30s wait.
 			if (status === 'retrying') entry.conn.nudge();
@@ -262,10 +278,8 @@ export function createSolder(options: SolderOptions = {}): Solder {
 				// Idempotent: a second call (or one after the linger already
 				// closed this entry) must not re-arm a linger that would later
 				// evict a LIVE successor entry from the registry.
-				const owned = entry.subscribers.get(handlers);
-				if (!owned) return;
-				entry.subscribers.delete(handlers);
-				release(entry, owned);
+				if (!entry.subscribers.delete(registration)) return;
+				release(entry, names);
 				if (entry.subscribers.size > 0) return;
 				clearTimeout(entry.linger);
 				entry.linger = setTimeout(() => {
@@ -279,12 +293,12 @@ export function createSolder(options: SolderOptions = {}): Solder {
 			};
 		},
 		nudge(url) {
-			if (url != null) entries.get(url)?.conn.nudge();
+			if (url !== undefined) entries.get(url)?.conn.nudge();
 			else wakeAll();
 		},
 		inspect(url) {
 			const entry = entries.get(url);
-			if (!entry) return null;
+			if (!entry) return undefined;
 			return {
 				...entry.conn.info(),
 				link: entry.link,

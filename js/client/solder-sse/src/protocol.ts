@@ -25,8 +25,9 @@ export function withResume(url: string, query: string, lastEventId: string): str
 /** What the server said when it could not replay from the cursor. */
 export interface ResyncInfo {
 	reason: 'expired' | 'unknown' | (string & {});
-	/** The oldest cursor the server still holds, when it named one. A
-	 * cursor is opaque: this is for a log line, not for arithmetic. */
+	/** The oldest cursor the server still holds, when it named one — `null`
+	 * as on the wire. A cursor is opaque: this is for a log line, not for
+	 * arithmetic. */
 	earliest: string | null;
 }
 
@@ -44,14 +45,14 @@ export function parseResync(data: string): ResyncInfo {
 	}
 }
 
-/** What a `ping` body announces, in ms; null where it announces nothing. */
+/** What a `ping` body announces, in ms; undefined where it announces nothing. */
 export interface PingHints {
 	/** The keep-alive interval — the dead-man window follows it. */
-	everyMs: number | null;
+	everyMs: number | undefined;
 	/** The rotation age: the server ends a healthy stream on purpose after
 	 * about this long. Information only — the reconnect policy already
 	 * reopens a cut healthy stream at once. */
-	maxAgeMs: number | null;
+	maxAgeMs: number | undefined;
 }
 
 export function parsePing(data: string): PingHints {
@@ -59,12 +60,12 @@ export function parsePing(data: string): PingHints {
 		const parsed = JSON.parse(data) as { every?: unknown; max_age?: unknown };
 		return { everyMs: secondsToMs(parsed.every), maxAgeMs: secondsToMs(parsed.max_age) };
 	} catch {
-		return { everyMs: null, maxAgeMs: null };
+		return { everyMs: undefined, maxAgeMs: undefined };
 	}
 }
 
-const secondsToMs = (value: unknown): number | null =>
-	typeof value === 'number' && value > 0 ? value * 1000 : null;
+const secondsToMs = (value: unknown): number | undefined =>
+	typeof value === 'number' && value > 0 ? value * 1000 : undefined;
 
 /** The dead-man window for a keep-alive interval: one missed ping plus a
  * margin for jitter and scheduling — the profile's `2 × every + 5s`. */
@@ -78,13 +79,13 @@ export interface Frame {
 	readonly name: string;
 	readonly data: string;
 	/** The cursor in force when this frame arrived (the browser's own
-	 * `lastEventId`, kept across frames that carry no id). Opaque: the
-	 * server issued it and only the server can read it. */
-	readonly lastEventId: string | null;
+	 * `lastEventId`, kept across frames that carry no id); undefined before
+	 * any. Opaque: the server issued it and only the server can read it. */
+	readonly lastEventId: string | undefined;
 	json<T = unknown>(): T;
 }
 
-export function makeFrame(name: string, data: string, lastEventId: string | null): Frame {
+export function makeFrame(name: string, data: string, lastEventId?: string): Frame {
 	let parsed: { value: unknown } | { error: unknown } | undefined;
 	return {
 		name,

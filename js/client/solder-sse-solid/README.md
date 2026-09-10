@@ -22,7 +22,7 @@ const { status, lastEventId } = createStream(
 );
 ```
 
-The subscription lives while the owner does and the URL accessor is non-null; a URL change
+The subscription lives while the owner does and the URL accessor is defined; a URL change
 unsubscribes and subscribes again (the registry keeps the old source lingering, so a hop back
 re-attaches without a reconnect). Uses Solid 2.0's two-phase `createEffect`, whose apply
 return value is the cleanup.

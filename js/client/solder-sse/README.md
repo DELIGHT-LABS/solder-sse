@@ -54,6 +54,11 @@ solder.inspect('/topic/stream'); // status, link, cursor, opens, deadmanMs, maxA
 solder.dispose(); // hot-replacement / test teardown
 ```
 
+Absence is `undefined`: `inspect()` of an unknown URL, `link` before a first verdict,
+`lastEventId` before a cursor, `maxAgeMs` when `ping` announces none. `null` appears only where it
+is a value the server sent (`earliest: null` in a `resync`) or an explicit disable in the
+environment (`visibility: null`, `online: null`).
+
 The poll is the truth and the stream is a freshness hint: a consumer patches what the stream
 carries, discards nothing on a drop, and polls once only when the server cannot have replayed
 the gap — a fresh reconnect or a `resync`. A resumed reconnect (every rotation, every cut inside

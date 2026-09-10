@@ -37,7 +37,11 @@ export interface LinkTrack {
 /** Fold a status report into the track. A repeated status keeps its
  * `since`: the clock measures how long the stream has been non-live, not
  * how long since the transport last spoke. */
-export function trackStatus(prev: LinkTrack | null, status: StreamStatus, now: number): LinkTrack {
+export function trackStatus(
+	prev: LinkTrack | undefined,
+	status: StreamStatus,
+	now: number
+): LinkTrack {
 	const everLive = (prev?.everLive ?? false) || status === 'live';
 	if (prev && prev.status !== 'live' && status !== 'live') {
 		return { status, since: prev.since, everLive };
@@ -45,22 +49,26 @@ export function trackStatus(prev: LinkTrack | null, status: StreamStatus, now: n
 	return { status, since: now, everLive };
 }
 
-/** The verdict at `now`; `null` while there is none yet (a first connect
- * still within its grace). */
-export function linkAt(track: LinkTrack, now: number, policy: LinkPolicy): LinkState | null {
+/** The verdict at `now`; undefined while there is none yet (a first
+ * connect still within its grace). */
+export function linkAt(track: LinkTrack, now: number, policy: LinkPolicy): LinkState | undefined {
 	if (track.status === 'live') return 'live';
 	const down = now - track.since;
 	if (down >= policy.offlineMs) return 'offline';
-	if (down < policy.graceMs) return track.everLive ? 'live' : null;
+	if (down < policy.graceMs) return track.everLive ? 'live' : undefined;
 	return track.everLive ? 'reconnecting' : 'connecting';
 }
 
 /** When the verdict may change on its own (a grace or offline deadline
- * passing), or `null` when only a status report can change it. */
-export function nextDeadline(track: LinkTrack, now: number, policy: LinkPolicy): number | null {
-	if (track.status === 'live') return null;
+ * passing); undefined when only a status report can change it. */
+export function nextDeadline(
+	track: LinkTrack,
+	now: number,
+	policy: LinkPolicy
+): number | undefined {
+	if (track.status === 'live') return undefined;
 	for (const at of [track.since + policy.graceMs, track.since + policy.offlineMs]) {
 		if (at > now) return at;
 	}
-	return null;
+	return undefined;
 }
