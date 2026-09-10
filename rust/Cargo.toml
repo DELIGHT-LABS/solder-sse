@@ -5,6 +5,8 @@ members = ["core/*", "server/*", "client/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Verified with `cargo +1.88 check --workspace --all-targets`; the floor is set by the dependency graph (icu via url).
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/DELIGHT-LABS/solder-sse"
 authors = ["DELIGHT LABS <contact@delightlabs.io>"]

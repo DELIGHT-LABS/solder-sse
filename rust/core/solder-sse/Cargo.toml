@@ -2,12 +2,15 @@
 name = "solder-sse"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "The resumable Server-Sent Events profile, on the wire: frames and their encoder, a spec-faithful parser, scheduling jitter — what a server and a client agree on"
 keywords = ["sse", "server-sent-events", "eventsource", "resumable", "protocol"]
 categories = ["web-programming", "parser-implementations"]
+# `tests/vectors.rs` reads `spec/vectors` at the repository root, which a published crate does not carry.
+exclude = ["tests/vectors.rs"]
 
 [dependencies]
 bytes.workspace = true
