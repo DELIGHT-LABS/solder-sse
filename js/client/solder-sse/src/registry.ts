@@ -36,18 +36,20 @@ export interface Handlers {
 	/** The server could not replay the gap: reload a snapshot (poll once). */
 	onResync?: (info: ResyncInfo) => void;
 	/** The retrying → live edge — never the first open, never the status
-	 * replay to a late joiner. `resumed` is true when the source reopened
-	 * with the cursor, so a server speaking the profile replays the gap
-	 * (and says `resync` when it cannot); a consumer that trusts replay
-	 * catches up — polls once — only when `!resumed`. */
+	 * replay to a late joiner. `resumed` is true when the source opened
+	 * with the cursor (`ConnectionInfo.resumed`), so a server speaking the
+	 * profile replays the gap (and says `resync` when it cannot); a
+	 * consumer that trusts replay catches up — polls once — only when
+	 * `!resumed`. */
 	onReconnect?: (resumed: boolean) => void;
 	onPing?: () => void;
 }
 
 export interface SubscribeOptions {
-	/** Named events to listen for. `message`, `ping` and `resync` are always
-	 * wired; a server-sent `error` event that carries data is delivered as
-	 * a frame named `error`. Names are refcounted across subscribers. */
+	/** Named events to listen for. The unnamed `message`, `ping` and
+	 * `resync` are always wired (listing them changes nothing); a
+	 * server-sent `error` event that carries data is delivered as a frame
+	 * named `error`. Names are refcounted across subscribers. */
 	events?: readonly string[];
 }
 
@@ -106,10 +108,16 @@ const DEFAULTS = {
 	resume: { query: RESUME_QUERY }
 } as const;
 
+/** One `subscribe` call. A record per call, not per handlers object: the
+ * same object may subscribe twice, and each unsubscribe releases its own. */
+interface Registration {
+	handlers: Handlers;
+	names: readonly string[];
+}
+
 interface Entry {
 	conn: Connection;
-	/** Each subscriber with the event names it asked for. */
-	subscribers: Map<Handlers, readonly string[]>;
+	subscribers: Set<Registration>;
 	/** Refcount per wired name, so a name is unwired when its last
 	 * subscriber leaves. */
 	names: Map<string, number>;
@@ -162,9 +170,9 @@ export function createSolder(options: SolderOptions = {}): Solder {
 
 	// One subscriber's throw must not starve the others of the event.
 	const fanOut = (entry: Entry, fn: (h: Handlers) => void) => {
-		for (const h of entry.subscribers.keys()) {
+		for (const { handlers } of entry.subscribers) {
 			try {
-				fn(h);
+				fn(handlers);
 			} catch (e) {
 				console.error('[solder-sse] subscriber threw', e);
 			}
@@ -188,9 +196,12 @@ export function createSolder(options: SolderOptions = {}): Solder {
 	};
 
 	const create = (url: string, names: readonly string[]): Entry => {
+		// The connection reports through its sink from the constructor on (an
+		// EventSource that throws reports 'retrying' at once), so the entry the
+		// sink writes to exists first and takes the connection a line later.
 		const entry: Entry = {
 			conn: undefined as unknown as Connection,
-			subscribers: new Map(),
+			subscribers: new Set(),
 			names: new Map(),
 			track: null,
 			link: null,
@@ -203,9 +214,8 @@ export function createSolder(options: SolderOptions = {}): Solder {
 				if (status === 'retrying') entry.down = true;
 				else if (status === 'live' && entry.down) {
 					entry.down = false;
-					// The cursor in force when the source opened is the one it
-					// carried (no frame of the new source has arrived yet).
-					const resumed = entry.conn.info().lastEventId != null;
+					// The connection knows what its open carried.
+					const resumed = entry.conn.info().resumed;
 					fanOut(entry, (h) => h.onReconnect?.(resumed));
 				}
 				judge(entry);
@@ -247,7 +257,8 @@ export function createSolder(options: SolderOptions = {}): Solder {
 			const names = [...new Set(options.events ?? [])].filter((n) => !isReserved(n));
 			const entry = entries.get(url) ?? create(url, names);
 			clearTimeout(entry.linger);
-			entry.subscribers.set(handlers, names);
+			const registration: Registration = { handlers, names };
+			entry.subscribers.add(registration);
 			retain(entry, names);
 			// A late joiner must not sit on the default 'connecting' while the
 			// shared source is already live — replay the current status (and
@@ -262,10 +273,8 @@ export function createSolder(options: SolderOptions = {}): Solder {
 				// Idempotent: a second call (or one after the linger already
 				// closed this entry) must not re-arm a linger that would later
 				// evict a LIVE successor entry from the registry.
-				const owned = entry.subscribers.get(handlers);
-				if (!owned) return;
-				entry.subscribers.delete(handlers);
-				release(entry, owned);
+				if (!entry.subscribers.delete(registration)) return;
+				release(entry, names);
 				if (entry.subscribers.size > 0) return;
 				clearTimeout(entry.linger);
 				entry.linger = setTimeout(() => {

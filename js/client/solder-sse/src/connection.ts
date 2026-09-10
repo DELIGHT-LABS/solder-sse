@@ -28,6 +28,12 @@ import {
 
 export type StreamStatus = 'connecting' | 'live' | 'retrying';
 
+/** `EventSource.readyState` values, per the specification. Read from the
+ * instance and compared to these, never to a constructor's statics: an
+ * injected `EventSource` need not carry them. */
+const CONNECTING = 0;
+const CLOSED = 2;
+
 export interface Policy {
 	/** Watchdog backoff after the source gave up: full jitter over
 	 * `min(maxMs, baseMs·2^n)`, never below `floorMs`. */
@@ -68,12 +74,17 @@ export interface ConnectionInfo {
 	pingSeen: boolean;
 	/** The dead-man window in force (derived from `ping` when it announces one). */
 	deadmanMs: number | null;
-	/** The rotation age the server's `ping` announces (profile v1.2): it
-	 * ends a healthy stream on purpose after about this long. Information
-	 * for a console or a test; the reconnect policy does not change for it. */
+	/** The rotation age the server's `ping` announces: it ends a healthy
+	 * stream on purpose after about this long. Information for a console or
+	 * a test; the reconnect policy does not change for it. */
 	maxAgeMs: number | null;
 	/** Consecutive failed opens (the backoff exponent). */
 	attempt: number;
+	/** Whether the current source opened with a cursor, so a server speaking
+	 * the profile replays the gap: an owned open that carried the resume
+	 * query, or the browser's own reconnect while a cursor was in force (it
+	 * sends `Last-Event-ID` by itself, whatever the resume policy). */
+	resumed: boolean;
 }
 
 export interface Connection {
@@ -88,10 +99,12 @@ export interface Connection {
 	close(): void;
 }
 
-/** Names the connection wires itself; a subscriber cannot claim them. */
-const RESERVED = new Set([PING, RESYNC, 'error']);
+/** Names the connection wires itself, for every source and for as long as
+ * it lives: a subscriber neither claims nor releases them. */
+const RESERVED = new Set([PING, RESYNC, 'error', 'message']);
 
-/** True for the event names the profile owns (`ping`, `resync`, `error`). */
+/** True for the names the connection always wires: the profile's own
+ * (`ping`, `resync`), `error`, and the unnamed `message`. */
 export function isReserved(name: string): boolean {
 	return RESERVED.has(name);
 }
@@ -111,7 +124,8 @@ export function openConnection(
 		pingSeen: false,
 		deadmanMs: policy.deadmanMs === 'auto' ? DEFAULT_DEADMAN_MS : policy.deadmanMs,
 		maxAgeMs: null,
-		attempt: 0
+		attempt: 0,
+		resumed: false
 	};
 	let source: EventSource | null = null;
 	let closed = false;
@@ -121,6 +135,9 @@ export function openConnection(
 	 * clean URL instead. */
 	let openedWithQuery = false;
 	let staleQuery = false;
+	/** `open` events of the current source: the first is the open this
+	 * machine made, every later one a reconnect the browser made itself. */
+	let sourceOpens = 0;
 	let reviveTimer: ReturnType<typeof setTimeout> | undefined;
 	let connectTimer: ReturnType<typeof setTimeout> | undefined;
 	// Dead-man: one interval per connection, not a timer reset per event —
@@ -154,7 +171,7 @@ export function openConnection(
 		clearTimeout(connectTimer);
 		connectTimer = setTimeout(() => {
 			connectTimer = undefined;
-			if (!closed && source?.readyState === EventSource.CONNECTING) {
+			if (!closed && source?.readyState === CONNECTING) {
 				source.close();
 				setStatus('retrying');
 				scheduleRevive();
@@ -263,13 +280,13 @@ export function openConnection(
 			setStatus('retrying');
 			// The timer guard keeps a double error burst from stacking revivals.
 			if (closed || reviveTimer != null) return;
-			if (src.readyState === EventSource.CLOSED) {
+			if (src.readyState === CLOSED) {
 				// EventSource gave up (HTTP error) — take over.
 				clearTimeout(connectTimer);
 				connectTimer = undefined;
 				stopDeadman();
 				scheduleRevive();
-			} else if (src.readyState === EventSource.CONNECTING) {
+			} else if (src.readyState === CONNECTING) {
 				if (staleQuery) {
 					reopen(0);
 				} else if (
@@ -309,6 +326,7 @@ export function openConnection(
 		source = next;
 		openedWithQuery = target !== url;
 		staleQuery = false;
+		sourceOpens = 0;
 		state.opens += 1;
 		liveSinceMs = null;
 		stopDeadman();
@@ -316,15 +334,28 @@ export function openConnection(
 		setStatus('connecting');
 		armConnectTimer();
 		wire(next);
-		next.onopen = () => {
+		// Fires for this open and again for every reconnect the browser makes
+		// on the same source.
+		next.addEventListener('open', () => {
+			const native = sourceOpens > 0;
+			sourceOpens += 1;
+			// The browser's own reconnect sends `Last-Event-ID` whenever a
+			// cursor is in force (an empty `id:` — resync — clears it, and
+			// this machine mirrors that); an owned open carried the query.
+			state.resumed = native ? state.lastEventId != null : openedWithQuery;
+			// The dead-man belongs to a connection: it is armed by a ping on
+			// THIS one, at the window this one announces.
+			state.pingSeen = false;
+			state.maxAgeMs = null;
+			if (policy.deadmanMs === 'auto') state.deadmanMs = DEFAULT_DEADMAN_MS;
+			stopDeadman();
 			clearTimeout(connectTimer);
 			connectTimer = undefined;
 			state.attempt = 0;
 			liveSinceMs = env.now();
 			touch();
-			startDeadman();
 			setStatus('live');
-		};
+		});
 	};
 
 	open();

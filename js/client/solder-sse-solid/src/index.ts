@@ -9,6 +9,9 @@ export interface Stream {
 	status: Accessor<StreamStatus>;
 	/** The link verdict — what a surface shows; `null` before the first. */
 	link: Accessor<LinkState | null>;
+	/** The cursor in force on the current stream: seeded from the registry
+	 * when the URL is (re)entered, moved by every frame, cleared by a
+	 * `resync` and by a URL change. Opaque — for display and tests. */
 	lastEventId: Accessor<string | null>;
 }
 
@@ -39,6 +42,9 @@ export function createStream(
 			options.onSwitch?.(current, next);
 			current = next;
 			setLink(null);
+			// A cursor belongs to one stream. The new URL's may still be in
+			// the registry (a lingering source a hop back re-attaches to).
+			setLastEventId(next == null ? null : (solder.inspect(next)?.lastEventId ?? null));
 		}
 		if (next == null) return;
 		return solder.subscribe(
@@ -54,8 +60,12 @@ export function createStream(
 					handlers.onLink?.(l);
 				},
 				onEvent: (frame) => {
-					if (frame.lastEventId != null) setLastEventId(frame.lastEventId);
+					setLastEventId(frame.lastEventId);
 					handlers.onEvent?.(frame);
+				},
+				onResync: (info) => {
+					setLastEventId(null);
+					handlers.onResync?.(info);
 				}
 			},
 			{ events: options.events }
