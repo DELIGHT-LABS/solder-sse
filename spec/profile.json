@@ -1,7 +1,8 @@
 {
-	"version": 1.2,
+	"version": 1,
 	"events": { "ping": "ping", "resync": "resync" },
 	"resume": { "header": "last-event-id", "query": "last_event_id" },
+	"cursor": { "alphabet": "A-Za-z0-9._~-", "maxLength": 128 },
 	"resyncReasons": ["expired", "unknown"],
 	"keepAliveSeconds": 15,
 	"deadmanSeconds": 35,

@@ -1,7 +1,7 @@
 //! The golden vectors of `spec/vectors/` — the encoder must produce them and
 //! the parser must read them back. The browser package keeps the same files.
 use solder_sse::parse::{Frame, Parsed, Parser};
-use solder_sse::{Event, ResyncReason};
+use solder_sse::{Cursor, Event, Ping, Resync};
 use std::time::Duration;
 
 /// `spec/vectors/` at the repository root — the same files every
@@ -24,6 +24,10 @@ fn parse(bytes: &[u8]) -> Vec<Parsed> {
     out
 }
 
+fn cursor(token: &str) -> Cursor {
+    Cursor::parse(token).unwrap()
+}
+
 #[test]
 fn connect_is_retry_then_ping() {
     let bytes = vector("connect");
@@ -31,7 +35,7 @@ fn connect_is_retry_then_ping() {
         .retry(Duration::from_millis(750))
         .encode()
         .to_vec();
-    encoded.extend_from_slice(&Event::ping().encode());
+    encoded.extend_from_slice(&Event::ping(&Ping::default()).encode());
     assert_eq!(encoded, bytes);
     assert_eq!(
         parse(&bytes),
@@ -40,7 +44,8 @@ fn connect_is_retry_then_ping() {
             Parsed::Event(Frame {
                 name: Some("ping".into()),
                 data: r#"{"every":15}"#.into(),
-                id: None
+                id: None,
+                own_id: None
             })
         ]
     );
@@ -49,24 +54,31 @@ fn connect_is_retry_then_ping() {
 #[test]
 fn ping_may_announce_the_rotation_age() {
     let bytes = vector("ping-max-age");
-    assert_eq!(Event::ping_with(15, Some(30)).encode(), bytes);
+    let ping = Ping {
+        every: 15,
+        max_age: Some(30),
+    };
+    assert_eq!(Event::ping(&ping).encode(), bytes);
     assert_eq!(
         parse(&bytes),
         vec![Parsed::Event(Frame {
             name: Some("ping".into()),
             data: r#"{"every":15,"max_age":30}"#.into(),
-            id: None
+            id: None,
+            own_id: None
         })]
     );
 }
 
 #[test]
-fn event_carries_its_sequence_as_id() {
+fn event_carries_its_cursor_as_id() {
+    // The cursor is opaque: a log's `<generation>-<sequence>` here, a plain
+    // number in `multiline` — a client echoes either without reading it.
     let bytes = vector("event");
     assert_eq!(
         Event::named("new_message")
-            .seq(48211)
-            .data(r#"{"seq":48211}"#)
+            .cursor(Some(cursor("7f3a9c2e-48211")))
+            .data(r#"{"n":48211}"#)
             .encode(),
         bytes
     );
@@ -74,22 +86,34 @@ fn event_carries_its_sequence_as_id() {
         parse(&bytes),
         vec![Parsed::Event(Frame {
             name: Some("new_message".into()),
-            data: r#"{"seq":48211}"#.into(),
-            id: Some("48211".into())
+            data: r#"{"n":48211}"#.into(),
+            id: Some("7f3a9c2e-48211".into()),
+            own_id: Some("7f3a9c2e-48211".into())
         })]
     );
 }
 
 #[test]
-fn resync_resets_the_cursor() {
+fn resync_resets_the_cursor_and_may_name_the_earliest() {
     let bytes = vector("resync");
-    assert_eq!(Event::resync(ResyncReason::Expired, 47900).encode(), bytes);
+    assert_eq!(
+        Event::resync(&Resync::expired(Some(cursor("7f3a9c2e-47900")))).encode(),
+        bytes
+    );
     let mut p = Parser::new();
-    p.feed(b"id: 1\n\n");
+    p.feed(b"id: 7f3a9c2e-1\n\n");
     let out = p.feed(&bytes);
     assert_eq!(p.last_event_id(), None);
+    assert!(matches!(
+        &out[0],
+        Parsed::Event(f)
+            if f.name.as_deref() == Some("resync") && f.id.is_none() && f.own_id.as_deref() == Some("")
+    ));
+
+    let bytes = vector("resync-unknown");
+    assert_eq!(Event::resync(&Resync::unknown()).encode(), bytes);
     assert!(
-        matches!(&out[0], Parsed::Event(f) if f.name.as_deref() == Some("resync") && f.id.is_none())
+        matches!(&parse(&bytes)[0], Parsed::Event(f) if f.data == r#"{"reason":"unknown","earliest":null}"#)
     );
 }
 
@@ -98,7 +122,7 @@ fn multi_line_data_round_trips() {
     let bytes = vector("multiline");
     assert_eq!(
         Event::named("note")
-            .seq(5)
+            .cursor(Some(cursor("5")))
             .data("line one\nline two")
             .encode(),
         bytes

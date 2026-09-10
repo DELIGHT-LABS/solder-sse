@@ -1,10 +1,10 @@
 # solder-sse-axum
 
-axum adapter for [`solder-sse`](../solder-sse). Two newtypes, because Rust's orphan rule forbids
+axum adapter for `solder-sse-server`. Two newtypes, because Rust's orphan rule forbids
 implementing axum's traits for another crate's types:
 
-- `Resume(pub solder_sse::Resume)` — an extractor reading `Last-Event-ID` or `?last_event_id=`.
-- `Sse(pub solder_sse::SseResponse<S>)` — `IntoResponse`.
+- `Resume(pub solder_sse_server::Resume)` — an extractor reading `Last-Event-ID` or `?last_event_id=`.
+- `Sse(pub solder_sse_server::SseResponse<S>)` — `IntoResponse`.
 - `unavailable(retry_after)` — the `503 + Retry-After` response.
 
 ```rust
@@ -14,4 +14,4 @@ async fn stream(Resume(resume): Resume, State(app): State<App>) -> Response {
 }
 ```
 
-Tracks axum 0.7 (`axum-core` 0.4). License: MIT.
+Tracks axum 0.8 (`axum-core` 0.5). License: MIT or Apache-2.0, at your option.

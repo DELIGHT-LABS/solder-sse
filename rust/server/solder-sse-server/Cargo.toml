@@ -1,0 +1,26 @@
+[package]
+name = "solder-sse-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Resumable Server-Sent Events for Rust servers: monotonic ids, Last-Event-ID replay from a bounded log, resync, ping keep-alive, jittered retry, rotation — on http/http-body, framework adapters on top"
+keywords = ["sse", "server-sent-events", "eventsource", "resumable", "http"]
+categories = ["web-programming", "asynchronous"]
+
+[dependencies]
+solder-sse.workspace = true
+bytes.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+pin-project-lite.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

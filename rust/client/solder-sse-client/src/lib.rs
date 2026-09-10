@@ -3,8 +3,8 @@
 //! A subscription is a background task that keeps one stream alive for as
 //! long as the [`Subscription`] lives:
 //!
-//! * every reconnect sends `Last-Event-ID` (the last id seen), so a server
-//!   speaking the profile replays the gap,
+//! * every reconnect sends `Last-Event-ID` (the last cursor seen), so a
+//!   server speaking the profile replays the gap,
 //! * a healthy stream the far end cut is reopened at once (jittered ≤250ms);
 //!   a transport error or a non-200 goes through full-jitter exponential
 //!   backoff (1s → 30s), and a `503` honours `Retry-After` as the floor,
@@ -21,7 +21,7 @@
 //! while let Some(msg) = sub.recv().await {
 //!     match msg {
 //!         Message::Event(frame) => { /* frame.name, frame.data, frame.id */ }
-//!         Message::Resync { .. } => reload_snapshot().await,
+//!         Message::Resync(_) => reload_snapshot().await,
 //!         Message::Status(_) | Message::Ping => {}
 //!     }
 //! }
@@ -33,7 +33,7 @@
 use futures_util::StreamExt;
 use http::header::{HeaderMap, HeaderValue, ACCEPT, RETRY_AFTER};
 use solder_sse::parse::{Frame, Parsed, Parser};
-use solder_sse::{PING, RESYNC};
+use solder_sse::{Ping, PING, RESYNC};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -41,6 +41,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 pub use solder_sse::parse;
+pub use solder_sse::{Resync, ResyncReason};
 
 /// Full-jitter exponential backoff parameters.
 #[derive(Debug, Clone, Copy)]
@@ -78,11 +79,10 @@ pub enum Deadman {
 /// Client behaviour. `Default` is the profile's recommendation.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Send `Last-Event-ID` on reconnects.
-    pub resume: bool,
     /// Extra request headers (auth, for example).
     pub headers: HeaderMap,
-    /// Time allowed for the response head to arrive.
+    /// Time allowed for the response head to arrive. The stream itself is
+    /// unbounded: its health is the dead-man's business.
     pub connect_timeout: Duration,
     /// Silence after a `ping` has been seen that means half-open.
     pub deadman: Deadman,
@@ -97,7 +97,6 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            resume: true,
             headers: HeaderMap::new(),
             connect_timeout: Duration::from_secs(20),
             deadman: Deadman::Auto,
@@ -157,25 +156,32 @@ pub enum Message {
     Event(Frame),
     /// A keep-alive.
     Ping,
-    /// The server could not replay from the cursor; reload a snapshot.
-    Resync {
-        /// `expired` | `unknown`.
-        reason: String,
-        /// Oldest sequence the server still holds (0 when unknown).
-        earliest_seq: u64,
-    },
+    /// The server could not replay from the cursor; reload a snapshot. Says
+    /// why and, when the server named it, the oldest cursor it still holds
+    /// — information for a log line: a cursor is opaque to a client.
+    Resync(Resync),
 }
 
 /// What the server announced in its `ping` on the current (or last)
 /// connection. Informational: the reconnect policy does not change for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ServerHints {
-    /// `{"every": n}` — the keep-alive interval (profile v1.1).
+    /// `{"every": n}` — the keep-alive interval.
     pub ping_every: Option<Duration>,
     /// `{"max_age": n}` — the lifetime after which the server ends a
-    /// healthy stream on purpose (profile v1.2, rotation); `None` when it
-    /// announces none.
+    /// healthy stream on purpose (rotation); `None` when it announces none.
     pub max_age: Option<Duration>,
+}
+
+impl From<Ping> for ServerHints {
+    /// A zero on the wire announces nothing.
+    fn from(ping: Ping) -> Self {
+        let secs = |n: u64| (n > 0).then(|| Duration::from_secs(n));
+        Self {
+            ping_every: secs(ping.every),
+            max_age: ping.max_age.and_then(secs),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -216,6 +222,11 @@ impl Drop for Subscription {
 
 /// Subscribe to `url` on the given reqwest client. Messages are buffered
 /// (256); a slow consumer applies back-pressure to the reader.
+///
+/// Build the client without a request `timeout`: reqwest's covers the
+/// whole body and would end every healthy stream at that age. The response
+/// head is bounded by [`Options::connect_timeout`], the stream by the
+/// dead-man.
 pub fn subscribe(http: reqwest::Client, url: impl Into<String>, options: Options) -> Subscription {
     let (tx, rx) = mpsc::channel(256);
     let shared = Arc::new(Shared::default());
@@ -238,22 +249,34 @@ async fn run(
         }
         let mut req = http
             .get(&url)
-            .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
-            .timeout(options.connect_timeout);
+            .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         for (k, v) in options.headers.iter() {
             req = req.header(k, v);
         }
-        if options.resume {
-            if let Some(id) = shared.last_event_id.lock().expect("cursor").clone() {
-                req = req.header("last-event-id", id);
+        if let Some(id) = shared.last_event_id.lock().expect("cursor").clone() {
+            match HeaderValue::from_str(&id) {
+                Ok(value) => req = req.header("last-event-id", value),
+                // Not a value this profile could have issued: connect
+                // without it rather than fail every request from here on.
+                Err(_) => tracing::warn!(
+                    id,
+                    "solder-sse-client: last event id is not a header value; not resuming"
+                ),
             }
         }
 
-        let (cause, wait) = match req.send().await {
+        // The timeout covers the request up to the response head only; a
+        // reqwest-level timeout would cover the body too and cut every
+        // healthy stream at that age.
+        let sent = tokio::time::timeout(options.connect_timeout, req.send())
+            .await
+            .map_err(|_| format!("no response within {:?}", options.connect_timeout))
+            .and_then(|sent| sent.map_err(|e| e.to_string()));
+        let (cause, wait) = match sent {
             Err(e) => {
                 let wait = backoff(&options, attempt);
                 attempt += 1;
-                (Cause::Transport(e.to_string()), wait)
+                (Cause::Transport(e), wait)
             }
             Ok(resp) if resp.status() != reqwest::StatusCode::OK => {
                 let status = resp.status().as_u16();
@@ -362,7 +385,9 @@ async fn read(
                     match frame.name.as_deref() {
                         Some(PING) => {
                             ping_seen = true;
-                            let hints = parse_ping(&frame.data);
+                            // A payload the wire type cannot read announces nothing.
+                            let hints = serde_json::from_str::<Ping>(&frame.data)
+                                .map_or_else(|_| ServerHints::default(), ServerHints::from);
                             *shared.hints.lock().expect("hints") = hints;
                             if auto_deadman {
                                 if let Some(every) = hints.ping_every {
@@ -371,13 +396,9 @@ async fn read(
                             }
                             Message::Ping
                         }
-                        Some(RESYNC) => {
-                            let (reason, earliest_seq) = parse_resync(&frame.data);
-                            Message::Resync {
-                                reason,
-                                earliest_seq,
-                            }
-                        }
+                        Some(RESYNC) => Message::Resync(
+                            serde_json::from_str(&frame.data).unwrap_or_else(|_| Resync::unknown()),
+                        ),
                         _ => Message::Event(frame),
                     }
                 }
@@ -389,58 +410,12 @@ async fn read(
     }
 }
 
-/// Default dead-man window when ping announces no interval (profile v1: 35s).
-pub const DEFAULT_DEADMAN: Duration = Duration::from_secs(35);
+/// The dead-man window until the `ping` announces an interval (profile v1: 35s).
+const DEFAULT_DEADMAN: Duration = Duration::from_secs(35);
 
-/// Compute the dead-man window for a keep-alive interval: `2 × every + 5s`.
-pub fn deadman_for(every: Duration) -> Duration {
+/// The dead-man window for a keep-alive interval: `2 × every + 5s`.
+fn deadman_for(every: Duration) -> Duration {
     Duration::from_secs(2 * every.as_secs() + 5)
-}
-
-/// The `ping` payload's hints: `{"every":15,"max_age":30}`, either field
-/// optional, zero meaning absent. A tiny hand parser keeps serde out of
-/// the dependency graph.
-fn parse_ping(data: &str) -> ServerHints {
-    ServerHints {
-        ping_every: json_secs(data, "\"every\""),
-        max_age: json_secs(data, "\"max_age\""),
-    }
-}
-
-/// The text after `"key":` in a flat JSON object — `quoted_key` carries
-/// its own quotes, so a lookup borrows and allocates nothing.
-fn json_value<'a>(data: &'a str, quoted_key: &str) -> Option<&'a str> {
-    let start = data.find(quoted_key)? + quoted_key.len();
-    data[start..]
-        .trim_start()
-        .strip_prefix(':')
-        .map(str::trim_start)
-}
-
-/// The leading run of digits of `value` as a number; `None` when there is
-/// none.
-fn json_digits(value: &str) -> Option<u64> {
-    let len = value.bytes().take_while(u8::is_ascii_digit).count();
-    value[..len].parse().ok()
-}
-
-/// A positive whole-second field of a flat JSON object, or `None`.
-fn json_secs(data: &str, quoted_key: &str) -> Option<Duration> {
-    let secs = json_digits(json_value(data, quoted_key)?)?;
-    (secs > 0).then(|| Duration::from_secs(secs))
-}
-
-/// `{"reason":"expired","earliest_seq":9}` — the reason and the oldest
-/// sequence the server still holds; `unknown` / 0 for anything malformed.
-fn parse_resync(data: &str) -> (String, u64) {
-    let reason = json_value(data, "\"reason\"")
-        .and_then(|value| value.strip_prefix('"'))
-        .and_then(|value| value.split('"').next())
-        .unwrap_or("unknown");
-    let earliest_seq = json_value(data, "\"earliest_seq\"")
-        .and_then(json_digits)
-        .unwrap_or(0);
-    (reason.to_owned(), earliest_seq)
 }
 
 fn backoff(options: &Options, attempt: u32) -> Duration {
@@ -457,45 +432,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resync_payload_is_read_without_serde() {
+    fn a_ping_becomes_hints_and_a_zero_announces_nothing() {
+        let hints = |every, max_age| ServerHints::from(Ping { every, max_age });
         assert_eq!(
-            parse_resync(r#"{"reason":"expired","earliest_seq":47900}"#),
-            ("expired".into(), 47900)
-        );
-        assert_eq!(
-            parse_resync(r#"{"reason" : "expired", "earliest_seq" : 47900}"#),
-            ("expired".into(), 47900)
-        );
-        assert_eq!(
-            parse_resync(r#"{"earliest_seq":0,"reason":"unknown"}"#),
-            ("unknown".into(), 0)
-        );
-        assert_eq!(parse_resync("garbage"), ("unknown".into(), 0));
-    }
-
-    #[test]
-    fn ping_payload_is_read_without_serde() {
-        let every = |s: &str| parse_ping(s).ping_every;
-        assert_eq!(every(r#"{"every":15}"#), Some(Duration::from_secs(15)));
-        assert_eq!(every(r#"{"every": 10}"#), Some(Duration::from_secs(10)));
-        assert_eq!(every(r#"{"every" : 20}"#), Some(Duration::from_secs(20)));
-        assert_eq!(every(r#"{"every":0}"#), None);
-        assert_eq!(every(r#"{}"#), None);
-        assert_eq!(every("garbage"), None);
-        // v1.2: the rotation age rides the same frame, in either order
-        assert_eq!(
-            parse_ping(r#"{"every":15,"max_age":30}"#),
+            hints(15, Some(30)),
             ServerHints {
                 ping_every: Some(Duration::from_secs(15)),
                 max_age: Some(Duration::from_secs(30)),
             }
         );
-        assert_eq!(
-            parse_ping(r#"{"max_age": 30, "every": 15}"#).max_age,
-            Some(Duration::from_secs(30))
-        );
-        assert_eq!(parse_ping(r#"{"every":15}"#).max_age, None);
-        assert_eq!(parse_ping(r#"{"every":15,"max_age":0}"#).max_age, None);
+        assert_eq!(hints(15, None).max_age, None);
+        assert_eq!(hints(15, Some(0)).max_age, None);
+        assert_eq!(hints(0, None), ServerHints::default());
         assert_eq!(
             deadman_for(Duration::from_secs(15)),
             Duration::from_secs(35)
@@ -509,7 +457,6 @@ mod tests {
     #[test]
     fn defaults_match_the_profile() {
         let o = Options::default();
-        assert!(o.resume);
         assert_eq!(o.deadman, Deadman::Auto);
         assert_eq!(o.backoff.max, Duration::from_secs(30));
     }

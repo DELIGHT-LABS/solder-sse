@@ -1,7 +1,8 @@
 //! The wire format: one [`Event`] is one SSE frame.
 
+use crate::cursor::Cursor;
 use bytes::{BufMut, Bytes, BytesMut};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Keep-alive event name. Carries no `id`, so it never moves the client's
@@ -10,18 +11,18 @@ pub const PING: &str = "ping";
 /// Sent once, right after connect, when the server could not replay from
 /// the client's `Last-Event-ID`. The client reloads a snapshot.
 pub const RESYNC: &str = "resync";
-/// The keep-alive interval the profile recommends and [`Event::ping`]
+/// The keep-alive interval the profile recommends and [`Ping::default`]
 /// announces, seconds.
 pub const PING_EVERY_SECS: u64 = 15;
 
 /// Why a resume could not be served.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResyncReason {
     /// The id is older than what the log retains.
     Expired,
     /// The id is not one this server issued — a restart, a different
-    /// deployment, or a malformed value.
+    /// deployment, or a value that is not a cursor at all.
     Unknown,
 }
 
@@ -35,12 +36,70 @@ impl ResyncReason {
     }
 }
 
+/// What a `resync` frame says (`{"reason":"expired","earliest":"<cursor>"}`):
+/// why the resume failed and, when the server knows it, the oldest cursor
+/// it could still have replayed from. The server encodes it and the client
+/// decodes it — one type, one wire shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resync {
+    /// Why.
+    pub reason: ResyncReason,
+    /// The oldest cursor still retained on this stream; `None` (`null` on
+    /// the wire) when the server has none or does not know. Information
+    /// for a log line — a client cannot do anything with it but show it.
+    #[serde(default)]
+    pub earliest: Option<Cursor>,
+}
+
+impl Resync {
+    /// The cursor is older than what the server retains.
+    pub fn expired(earliest: Option<Cursor>) -> Self {
+        Self {
+            reason: ResyncReason::Expired,
+            earliest,
+        }
+    }
+
+    /// The cursor was never issued by this server.
+    pub fn unknown() -> Self {
+        Self {
+            reason: ResyncReason::Unknown,
+            earliest: None,
+        }
+    }
+}
+
+/// What the `ping` frame says (`{"every":15}`, or `{"every":15,"max_age":30}`
+/// when the server rotates streams — profile §8): the keep-alive interval
+/// and the lifetime after which a healthy stream ends on purpose. Whole
+/// seconds; zero or absent announces nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ping {
+    /// The keep-alive interval, seconds.
+    #[serde(default)]
+    pub every: u64,
+    /// The rotation lifetime, seconds; absent when the server does not rotate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<u64>,
+}
+
+impl Default for Ping {
+    /// The profile's recommendation: every 15 s, no rotation.
+    fn default() -> Self {
+        Self {
+            every: PING_EVERY_SECS,
+            max_age: None,
+        }
+    }
+}
+
 /// One SSE frame. Build it with the chainable setters and encode with
 /// [`Event::encode`]; every field is optional so the same type expresses a
 /// data event, a bare `retry:` hint, or a comment.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Event {
-    /// `id:` — the resume cursor. Must not contain a newline or NUL.
+    /// `id:` — the resume cursor ([`Cursor`]); the profile sets it only on
+    /// events that change state.
     pub id: Option<String>,
     /// `event:` — the name a client listens to.
     pub name: Option<String>,
@@ -74,48 +133,31 @@ impl Event {
         }
     }
 
-    /// The `resync` frame for a failed resume. `earliest_seq` is the oldest
-    /// sequence the log still holds (0 when unknown).
-    pub fn resync(reason: ResyncReason, earliest_seq: u64) -> Self {
+    /// The `resync` frame for a failed resume: [`Resync`] as JSON.
+    pub fn resync(resync: &Resync) -> Self {
         // An EMPTY `id:` resets the browser's last event id (WHATWG), so its
         // own next retry does not resend the cursor this frame rejected.
-        Self::named(RESYNC).id("").data(
-            serde_json::json!({ "reason": reason.as_str(), "earliest_seq": earliest_seq })
-                .to_string(),
-        )
+        Self::named(RESYNC).id("").data(profile_json(resync))
     }
 
-    /// The keep-alive frame: `event: ping` carrying the interval in seconds (`{"every":15}`).
-    pub fn ping() -> Self {
-        Self::ping_every(PING_EVERY_SECS)
+    /// The keep-alive frame: `event: ping` carrying what the server
+    /// announces, [`Ping`] as JSON. Never carries an `id:`.
+    pub fn ping(ping: &Ping) -> Self {
+        Self::named(PING).data(profile_json(ping))
     }
 
-    /// The keep-alive frame carrying a specific interval in seconds: `{"every":<secs>}`.
-    pub fn ping_every(every_secs: u64) -> Self {
-        Self::ping_with(every_secs, None)
-    }
-
-    /// The keep-alive frame announcing the interval and, when the server
-    /// rotates streams (profile §10), the lifetime after which a healthy
-    /// stream ends on purpose: `{"every":15,"max_age":30}`. Both in whole
-    /// seconds; `None` announces no rotation.
-    pub fn ping_with(every_secs: u64, max_age_secs: Option<u64>) -> Self {
-        let data = match max_age_secs {
-            Some(max_age) => format!(r#"{{"every":{every_secs},"max_age":{max_age}}}"#),
-            None => format!(r#"{{"every":{every_secs}}}"#),
-        };
-        Self::named(PING).data(data)
-    }
-
-    /// Set `id:` from any displayable value.
+    /// Set `id:` from any displayable value — a [`Cursor`], or the empty
+    /// string that resets the client's cursor.
     pub fn id(mut self, id: impl ToString) -> Self {
         self.id = Some(id.to_string());
         self
     }
 
-    /// Set `id:` from a sequence number — the profile's cursor.
-    pub fn seq(self, seq: u64) -> Self {
-        self.id(seq)
+    /// Set `id:` from the log's cursor; `None` leaves the frame without
+    /// one, so it does not move the client's cursor.
+    pub fn cursor(mut self, cursor: Option<Cursor>) -> Self {
+        self.id = cursor.map(String::from);
+        self
     }
 
     /// Set `event:`.
@@ -124,7 +166,8 @@ impl Event {
         self
     }
 
-    /// Set `data:` from text. Multi-line text becomes several `data:` lines.
+    /// Set `data:` from text. Every line break — LF, CR LF or a bare CR —
+    /// becomes a new `data:` line, the way the parser reads them.
     pub fn data(mut self, data: impl Into<String>) -> Self {
         self.data = Some(data.into());
         self
@@ -139,11 +182,6 @@ impl Event {
     pub fn retry(mut self, delay: Duration) -> Self {
         self.retry = Some(delay);
         self
-    }
-
-    /// True when the frame carries an `id:` — i.e. it moves the cursor.
-    pub fn has_id(&self) -> bool {
-        self.id.is_some()
     }
 
     /// Encode as wire bytes, terminated by the blank line.
@@ -169,9 +207,9 @@ impl Event {
             out.put_u8(b'\n');
         }
         if let Some(data) = &self.data {
-            for line in data.split('\n') {
+            for line in lines(data) {
                 out.put_slice(b"data: ");
-                out.put_slice(line.trim_end_matches('\r').as_bytes());
+                out.put_slice(line.as_bytes());
                 out.put_u8(b'\n');
             }
         }
@@ -183,6 +221,37 @@ impl Event {
         out.put_u8(b'\n');
         out.freeze()
     }
+}
+
+/// The profile's own payloads cannot fail to serialise: plain fields, no maps.
+fn profile_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).expect("a profile payload serialises")
+}
+
+/// The lines of `data`, ended by LF, CR LF or a bare CR — the three line
+/// breaks the specification's parser recognises. Each becomes its own
+/// `data:` line; a bare CR left inside one would end the line early on the
+/// client and let the rest of the payload pose as another field.
+fn lines(data: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(data);
+    std::iter::from_fn(move || {
+        let s = rest?;
+        match s.find(['\n', '\r']) {
+            None => {
+                rest = None;
+                Some(s)
+            }
+            Some(i) => {
+                let next = if s[i..].starts_with("\r\n") {
+                    i + 2
+                } else {
+                    i + 1
+                };
+                rest = Some(&s[next..]);
+                Some(&s[..i])
+            }
+        }
+    })
 }
 
 /// `id:` and `event:` are single-line fields; a line break inside one would
@@ -201,42 +270,104 @@ mod tests {
 
     #[test]
     fn encodes_a_full_frame_in_fixed_field_order() {
+        let cursor = Cursor::parse("7f3a9c2e-48211").unwrap();
         let ev = Event::named("new_message")
-            .seq(48211)
-            .data("{\"seq\":48211}")
+            .cursor(Some(cursor))
+            .data("{\"n\":48211}")
             .retry(Duration::from_millis(750));
         assert_eq!(
             ev.encode(),
-            "retry: 750\nid: 48211\nevent: new_message\ndata: {\"seq\":48211}\n\n"
+            "retry: 750\nid: 7f3a9c2e-48211\nevent: new_message\ndata: {\"n\":48211}\n\n"
         );
+        assert!(Event::named("x").cursor(None).id.is_none());
     }
 
     #[test]
-    fn splits_multi_line_data_and_strips_cr() {
-        let ev = Event::new().data("a\r\nb\nc");
-        assert_eq!(ev.encode(), "data: a\ndata: b\ndata: c\n\n");
+    fn every_line_break_starts_a_new_data_line() {
+        assert_eq!(
+            Event::new().data("a\r\nb\nc\rd").encode(),
+            "data: a\ndata: b\ndata: c\ndata: d\n\n"
+        );
+        // A trailing break keeps its (empty) last line, so it round-trips.
+        assert_eq!(Event::new().data("a\n").encode(), "data: a\ndata: \n\n");
+        assert_eq!(Event::new().data("").encode(), "data: \n\n");
+    }
+
+    #[test]
+    fn a_bare_cr_in_data_cannot_forge_a_field() {
+        // Read by a spec parser, "a\rid: 9" would end the data line at the
+        // CR and take `id: 9` as a field — moving the client's cursor.
+        let ev = Event::named("t").data("a\rid: 9");
+        assert_eq!(ev.encode(), "event: t\ndata: a\ndata: id: 9\n\n");
+        let mut p = crate::Parser::new();
+        let out = p.feed(&ev.encode());
+        assert!(matches!(&out[0], crate::Parsed::Event(f) if f.data == "a\nid: 9"));
+        assert_eq!(p.last_event_id(), None);
     }
 
     #[test]
     fn ping_and_resync_frames_are_the_profile_constants() {
         assert_eq!(
-            Event::ping().encode(),
+            Event::ping(&Ping::default()).encode(),
             "event: ping\ndata: {\"every\":15}\n\n"
         );
         assert_eq!(
-            Event::ping_every(30).encode(),
+            Event::ping(&Ping {
+                every: 30,
+                max_age: None
+            })
+            .encode(),
             "event: ping\ndata: {\"every\":30}\n\n"
         );
         assert_eq!(
-            Event::ping_with(15, Some(30)).encode(),
+            Event::ping(&Ping {
+                every: 15,
+                max_age: Some(30)
+            })
+            .encode(),
             "event: ping\ndata: {\"every\":15,\"max_age\":30}\n\n"
         );
-        assert_eq!(Event::ping_with(15, None).encode(), Event::ping().encode());
+        let earliest = Cursor::parse("7f3a9c2e-47900").unwrap();
         assert_eq!(
-            Event::resync(ResyncReason::Expired, 47900).encode(),
-            "id: \nevent: resync\ndata: {\"earliest_seq\":47900,\"reason\":\"expired\"}\n\n"
+            Event::resync(&Resync::expired(Some(earliest))).encode(),
+            "id: \nevent: resync\ndata: {\"reason\":\"expired\",\"earliest\":\"7f3a9c2e-47900\"}\n\n"
         );
-        assert!(!Event::ping().has_id());
+        assert_eq!(
+            Event::resync(&Resync::unknown()).encode(),
+            "id: \nevent: resync\ndata: {\"reason\":\"unknown\",\"earliest\":null}\n\n"
+        );
+        assert!(Event::ping(&Ping::default()).id.is_none());
+    }
+
+    #[test]
+    fn the_profile_payloads_read_back_as_written() {
+        let ping = Ping {
+            every: 15,
+            max_age: Some(30),
+        };
+        let read = |s: &str| serde_json::from_str::<Ping>(s).unwrap();
+        assert_eq!(read(r#"{"every":15,"max_age":30}"#), ping);
+        assert_eq!(read(r#"{"max_age": 30, "every": 15}"#), ping);
+        assert_eq!(
+            read("{}"),
+            Ping {
+                every: 0,
+                max_age: None
+            }
+        );
+        let earliest = Cursor::parse("7f3a9c2e-47900").unwrap();
+        let read = |s: &str| serde_json::from_str::<Resync>(s);
+        assert_eq!(
+            read(r#"{"reason":"expired","earliest":"7f3a9c2e-47900"}"#).unwrap(),
+            Resync::expired(Some(earliest))
+        );
+        assert_eq!(
+            read(r#"{"earliest":null,"reason":"unknown"}"#).unwrap(),
+            Resync::unknown()
+        );
+        assert_eq!(read(r#"{"reason":"unknown"}"#).unwrap(), Resync::unknown());
+        assert!(read(r#"{"reason":"later"}"#).is_err());
+        assert!(read(r#"{"reason":"expired","earliest":"a b"}"#).is_err());
     }
 
     #[test]
