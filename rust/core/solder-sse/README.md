@@ -1,33 +1,18 @@
 # solder-sse
 
-Resumable Server-Sent Events for Rust, on `http` / `http-body` — no web framework in the core.
-Adapters are a newtype each: `solder-sse-axum` today. A Rust client with the same profile lives in
-`solder-sse-client`; the browser package `solder-sse` speaks it from the other side.
+The resumable Server-Sent Events profile, on the wire. What a server and a client agree on, and
+nothing either side does alone:
 
-A stream can be cut at any moment. With this crate a cut costs nothing:
-
-| Profile point | Where |
+| Item | Where |
 | --- | --- |
-| Monotonic `id:` on every transition | `Event::seq`, assigned by `EventLog::append` |
-| `Last-Event-ID` / `?last_event_id=` replay of `seq > cursor` | `Resume::from_parts`, `resumable()` |
-| `resync` when the cursor cannot be served (empty `id:` resets the browser) | `Resumed::resync`, `Event::resync` |
-| `ping` at connect and every 15 s; jittered `retry:` | `SseResponseBuilder` |
-| `503 + Retry-After` instead of an empty 200 stream | `unavailable()` |
-| Rotation: end a healthy stream after `max_age` (±10 %, at a frame boundary), announced in `ping` | `SseResponseBuilder::max_age`, `max_age_jitter` |
-| Bounded replay buffer | `MemoryLog` (per topic, count + TTL); implement `EventLog` for SQL / Redis |
-| A log write failed after the state changed | `EventLog::mark_gap` — every earlier cursor answers `resync`; the publisher broadcasts the event unsequenced (no `id:`) so live viewers stay current and nobody misses it silently |
-| Broadcast fan-out that does not drop `Lagged` on the floor | `broadcast::bridge` |
-| A spec-faithful parser (clients, tests) | `Parser` |
+| A frame and its encoder — `id:`, `event:`, `data:`, `retry:`, comments, in a fixed field order; no payload can forge a field | `Event`, `Event::encode` |
+| The cursor: an opaque token in the URL-unreserved alphabet, issued by a server's log and echoed by a client | `Cursor` |
+| The profile's own frames and their payloads, encoded by the server and decoded by the client from one type each: the `ping` keep-alive (its interval and, when the server rotates streams, their age) and `resync` | `Event::ping`, `Ping`, `Event::resync`, `Resync`, `PING`, `RESYNC` |
+| A specification-faithful parser: chunk boundaries do not matter, an empty `id:` resets the cursor, and a frame reports both the cursor in force and the `id:` line it carried itself | `Parser`, `Frame`, `Parsed` |
+| Scheduling jitter without a random-number dependency: uniform draws and full-jitter backoff | `jitter::uniform`, `jitter::backoff_ms` |
 
-```rust
-let resume = Resume::from_parts(&parts);
-// resumable() calls the closure FIRST (subscribe), then reads the log.
-let r = resumable(&*log, "topic", resume, || broadcast::bridge(bus.subscribe()), 500).await;
-let response = SseResponseBuilder::new()
-    .resync(r.resync)
-    .build(r.stream.map(|p| p.map(|p| Event::named("tick").seq(p.seq).data(p.event))))
-    .into_http();                                           // http::Response<SseBody>
-```
+The contract is `spec/profile-v1.md` at the repository root; `spec/vectors/*.sse` are golden frames
+this crate encodes and decodes in `tests/vectors.rs`, and every other implementation checks the same
+files. The server half is `solder-sse-server`, the client half `solder-sse-client`.
 
-The wire contract is `spec/profile-v1.md`; `spec/vectors/*.sse` are golden frames shared with the
-browser package. License: MIT.
+License: MIT or Apache-2.0, at your option.

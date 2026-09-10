@@ -1,0 +1,22 @@
+[package]
+name = "solder-sse-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "A server that ends streams every way an intermediary can — clean, abrupt, by rotation, by restart, or not at all — so a solder-sse client in any language can prove the profile against it"
+keywords = ["sse", "server-sent-events", "testing", "resumable"]
+categories = ["development-tools::testing", "web-programming"]
+
+[[bin]]
+name = "solder-sse-testkit"
+path = "src/main.rs"
+
+[dependencies]
+solder-sse.workspace = true
+solder-sse-server.workspace = true
+solder-sse-axum.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["full"] }

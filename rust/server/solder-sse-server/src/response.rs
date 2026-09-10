@@ -1,8 +1,7 @@
 //! The HTTP response: an `http_body::Body` that frames events, keeps the
 //! connection alive with a named `ping` and, when asked, ends on its own
-//! after a lifetime so that connections rotate (profile §10).
+//! after a lifetime so that connections rotate (profile §8).
 
-use crate::protocol::{Event, ResyncReason};
 use bytes::Bytes;
 use futures_core::Stream;
 use http::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
@@ -10,6 +9,7 @@ use http::{Response, StatusCode};
 use http_body::Frame;
 use http_body_util::Full;
 use pin_project_lite::pin_project;
+use solder_sse::{Event, Ping, Resync};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Range;
@@ -134,12 +134,6 @@ impl<S> SseResponse<S> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct KeepAliveConfig {
-    every: Duration,
-    custom_frame: Option<Event>,
-}
-
 /// Rotation: the lifetime window a connection draws from and what the
 /// `ping` announces for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,7 +149,8 @@ struct MaxAge {
 #[derive(Debug, Clone)]
 pub struct SseResponseBuilder {
     retry: Option<Range<u64>>,
-    keep_alive: Option<KeepAliveConfig>,
+    /// The keep-alive interval; `None` sends no `ping`.
+    keep_alive: Option<Duration>,
     max_age: Option<MaxAge>,
     head: Vec<Event>,
 }
@@ -164,10 +159,7 @@ impl Default for SseResponseBuilder {
     fn default() -> Self {
         Self {
             retry: Some(500..1000),
-            keep_alive: Some(KeepAliveConfig {
-                every: Duration::from_secs(crate::protocol::PING_EVERY_SECS),
-                custom_frame: None,
-            }),
+            keep_alive: Some(Duration::from_secs(solder_sse::PING_EVERY_SECS)),
             max_age: None,
             head: Vec::new(),
         }
@@ -181,7 +173,7 @@ impl SseResponseBuilder {
         Self::default()
     }
 
-    /// Rotation (profile §10): end the response after `age`, jittered ±10%
+    /// Rotation (profile §8): end the response after `age`, jittered ±10%
     /// per connection so a fleet does not reconnect in lockstep — what gRPC
     /// does for its max connection age. The end is an ordinary end of the
     /// response at a frame boundary, after every head frame; a client
@@ -192,20 +184,14 @@ impl SseResponseBuilder {
     /// (`{"every":15,"max_age":30}`); under a second nothing is announced.
     /// `Duration::ZERO` means no rotation — a configuration's `0` can be
     /// passed through unchanged.
-    pub fn max_age(self, age: Duration) -> Self {
+    pub fn max_age(mut self, age: Duration) -> Self {
         if age.is_zero() {
-            return self.no_max_age();
+            self.max_age = None;
+            return self;
         }
         let ms = age.as_millis() as u64;
         let spread = ms / 10;
         self.max_age_window(ms.saturating_sub(spread)..ms + spread + 1, age.as_secs())
-    }
-
-    /// No rotation (the default): the response lives until the event
-    /// stream ends or the connection is cut.
-    pub fn no_max_age(mut self) -> Self {
-        self.max_age = None;
-        self
     }
 
     /// Rotation with an explicit lifetime window in milliseconds, drawn
@@ -245,23 +231,13 @@ impl SseResponseBuilder {
     }
 
     /// Send [`Event::ping`] whenever the stream has been quiet for `every`.
-    /// Default 15s — under every common proxy idle timeout.
+    /// Default 15s — under every common proxy idle timeout. The frame is
+    /// the profile's: it announces the interval (whole seconds; under a
+    /// second it announces the default) and the rotation age, so a client
+    /// can arm its dead-man timer — a comment keep-alive would be
+    /// invisible to `EventSource` and announce nothing.
     pub fn keep_alive(mut self, every: Duration) -> Self {
-        let custom_frame = self.keep_alive.and_then(|k| k.custom_frame);
-        self.keep_alive = Some(KeepAliveConfig {
-            every,
-            custom_frame,
-        });
-        self
-    }
-
-    /// Use a custom keep-alive frame (a comment, or a differently named event).
-    pub fn keep_alive_frame(mut self, frame: Event) -> Self {
-        let every = self.keep_alive.map_or(Duration::from_secs(15), |k| k.every);
-        self.keep_alive = Some(KeepAliveConfig {
-            every,
-            custom_frame: Some(frame),
-        });
+        self.keep_alive = Some(every);
         self
     }
 
@@ -271,11 +247,11 @@ impl SseResponseBuilder {
         self
     }
 
-    /// Announce a failed resume: `Some((reason, earliest_seq))` from
-    /// [`crate::Resumed::resync`]. `None` adds nothing.
-    pub fn resync(mut self, resync: Option<(ResyncReason, u64)>) -> Self {
-        if let Some((reason, earliest)) = resync {
-            self.head.push(Event::resync(reason, earliest));
+    /// Announce a failed resume: [`crate::Resumed::resync`]. `None` adds
+    /// nothing.
+    pub fn resync(mut self, resync: Option<Resync>) -> Self {
+        if let Some(resync) = resync {
+            self.head.push(Event::resync(&resync));
         }
         self
     }
@@ -297,7 +273,7 @@ impl SseResponseBuilder {
         if let Some(range) = self.retry {
             head.push_back(
                 Event::new()
-                    .retry(Duration::from_millis(crate::jitter::uniform(range)))
+                    .retry(Duration::from_millis(solder_sse::jitter::uniform(range)))
                     .encode(),
             );
         }
@@ -306,37 +282,37 @@ impl SseResponseBuilder {
             .as_ref()
             .map(|m| m.announced_secs)
             .filter(|&secs| secs > 0);
-        let keep_alive = self.keep_alive.map(|cfg| {
-            let frame = cfg.custom_frame.unwrap_or_else(|| {
-                // The announced interval is whole seconds: a sub-second
-                // keep-alive (tests, tight links) announces the default and
-                // the client keeps its default window.
-                let secs = cfg.every.as_secs();
-                let every = if secs > 0 {
+        let keep_alive = self.keep_alive.map(|every| {
+            // The announced interval is whole seconds: a sub-second
+            // keep-alive (tests, tight links) announces the default and the
+            // client keeps its default window.
+            let secs = every.as_secs();
+            let ping = Ping {
+                every: if secs > 0 {
                     secs
                 } else {
-                    crate::protocol::PING_EVERY_SECS
-                };
-                Event::ping_with(every, announced_max_age)
-            });
-            (cfg.every, frame)
+                    solder_sse::PING_EVERY_SECS
+                },
+                max_age: announced_max_age,
+            };
+            (every, Event::ping(&ping).encode())
         });
         // The keep-alive frame goes out once at connect, ahead of the first
         // interval: a client learns at once that this server sends pings and
         // can arm its dead-man timer — a connection cut before the first
         // interval would otherwise sit half-open with nothing to detect.
         if let Some((_, frame)) = &keep_alive {
-            head.push_back(frame.encode());
+            head.push_back(frame.clone());
         }
         head.extend(self.head.iter().map(Event::encode));
         let keep_alive = keep_alive.map(|(every, frame)| KeepAlive {
             sleep: tokio::time::sleep(every),
             every,
-            frame: frame.encode(),
+            frame,
         });
-        let deadline = self
-            .max_age
-            .map(|m| tokio::time::sleep(Duration::from_millis(crate::jitter::uniform(m.millis))));
+        let deadline = self.max_age.map(|m| {
+            tokio::time::sleep(Duration::from_millis(solder_sse::jitter::uniform(m.millis)))
+        });
         SseResponse {
             body: SseBody {
                 events,
@@ -381,13 +357,11 @@ mod tests {
 
     #[tokio::test]
     async fn retry_then_head_then_events() {
-        let events = stream::iter(vec![Ok::<_, Infallible>(
-            Event::named("a").seq(1).data("x"),
-        )]);
+        let events = stream::iter(vec![Ok::<_, Infallible>(Event::named("a").id(1).data("x"))]);
         let resp = SseResponseBuilder::new()
             .retry(Duration::from_millis(750))
             .no_keep_alive()
-            .resync(Some((ResyncReason::Unknown, 0)))
+            .resync(Some(Resync::unknown()))
             .head(Event::comment("snapshot"))
             .build(events)
             .into_http();
@@ -396,7 +370,7 @@ mod tests {
         assert_eq!(resp.headers()["x-accel-buffering"], "no");
         assert_eq!(
             frames(resp.into_body()).await,
-            "retry: 750\n\nid: \nevent: resync\ndata: {\"earliest_seq\":0,\"reason\":\"unknown\"}\n\n: snapshot\n\nid: 1\nevent: a\ndata: x\n\n"
+            "retry: 750\n\nid: \nevent: resync\ndata: {\"reason\":\"unknown\",\"earliest\":null}\n\n: snapshot\n\nid: 1\nevent: a\ndata: x\n\n"
         );
     }
 
@@ -406,7 +380,7 @@ mod tests {
         let g = gate.clone();
         let events = stream::once(async move {
             g.notified().await;
-            Ok::<_, Infallible>(Event::named("a").seq(1))
+            Ok::<_, Infallible>(Event::named("a").id(1))
         });
         let mut body = Box::pin(
             SseResponseBuilder::new()
@@ -433,21 +407,6 @@ mod tests {
         let ev = body.frame().await.unwrap().unwrap().into_data().unwrap();
         assert_eq!(ev, "id: 1\nevent: a\n\n");
         assert!(body.frame().await.is_none()); // stream ended → body ends
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn custom_keep_alive_frame_is_preserved() {
-        let events = stream::empty::<Result<Event, Infallible>>();
-        let mut body = Box::pin(
-            SseResponseBuilder::new()
-                .no_retry()
-                .keep_alive_frame(Event::comment("heartbeat"))
-                .build(events)
-                .into_http()
-                .into_body(),
-        );
-        let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
-        assert_eq!(first, ": heartbeat\n\n");
     }
 
     #[tokio::test(start_paused = true)]
@@ -481,12 +440,12 @@ mod tests {
     async fn head_frames_are_delivered_even_past_the_deadline() {
         // A connect snapshot must always reach the client; only live events
         // are left for the next connection (the log replays them).
-        let events = stream::iter(vec![Ok::<_, Infallible>(Event::named("a").seq(1))]);
+        let events = stream::iter(vec![Ok::<_, Infallible>(Event::named("a").id(1))]);
         let mut body = Box::pin(
             SseResponseBuilder::new()
                 .no_retry()
                 .no_keep_alive()
-                .resync(Some((ResyncReason::Unknown, 0)))
+                .resync(Some(Resync::unknown()))
                 .head(Event::comment("snapshot"))
                 .max_age_jitter(0..1)
                 .build(events)
@@ -524,16 +483,6 @@ mod tests {
             first(SseResponseBuilder::new().max_age_jitter(500..600)).await,
             "event: ping\ndata: {\"every\":15}\n\n"
         );
-        // a custom keep-alive frame is the caller's: untouched
-        assert_eq!(
-            first(
-                SseResponseBuilder::new()
-                    .keep_alive_frame(Event::comment("hb"))
-                    .max_age(Duration::from_secs(30))
-            )
-            .await,
-            ": hb\n\n"
-        );
     }
 
     #[test]
@@ -548,12 +497,12 @@ mod tests {
         );
         let b = SseResponseBuilder::new().max_age_jitter(300..301);
         assert_eq!(b.max_age.unwrap().announced_secs, 0);
-        // a configuration's 0 passes through as "never"
+        // a configuration's 0 passes through as "never", and unsets
         let b = SseResponseBuilder::new().max_age(Duration::ZERO);
         assert_eq!(b.max_age, None);
         let b = SseResponseBuilder::new()
             .max_age(Duration::from_secs(30))
-            .no_max_age();
+            .max_age(Duration::ZERO);
         assert_eq!(b.max_age, None);
     }
 

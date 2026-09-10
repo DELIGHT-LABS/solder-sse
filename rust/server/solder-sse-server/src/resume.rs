@@ -2,6 +2,7 @@
 
 use http::request::Parts;
 use http::HeaderMap;
+use solder_sse::Cursor;
 
 /// Header the browser's own reconnect sends automatically.
 pub const HEADER: &str = "last-event-id";
@@ -10,15 +11,16 @@ pub const HEADER: &str = "last-event-id";
 pub const QUERY: &str = "last_event_id";
 
 /// The client's resume request, parsed from the header or the query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resume {
     /// No cursor: a first connection. The server sends its connect snapshot.
     None,
-    /// Replay everything with `seq > n`.
-    Since(u64),
-    /// A cursor that is not a sequence number. Treated as unknown: the
-    /// server answers with `resync(unknown)` and a snapshot.
-    Malformed,
+    /// Replay everything after this cursor.
+    Since(Cursor),
+    /// A value that is not a cursor at all (outside the token alphabet, or
+    /// too long). Answered like a cursor the log never issued: `resync
+    /// (unknown)` and a snapshot, so the client drops it.
+    Invalid,
 }
 
 impl Resume {
@@ -33,11 +35,7 @@ impl Resume {
         let raw = from_header.or_else(|| query_value(query?, QUERY));
         match raw {
             None => Resume::None,
-            Some(s) => match s.parse::<u64>() {
-                Ok(0) => Resume::None,
-                Ok(n) => Resume::Since(n),
-                Err(_) => Resume::Malformed,
-            },
+            Some(s) => Cursor::parse(s).map_or(Resume::Invalid, Resume::Since),
         }
     }
 
@@ -46,28 +44,18 @@ impl Resume {
         Self::parse(&parts.headers, parts.uri.query())
     }
 
-    /// The cursor on an internal wire that has no room for an enum: `0` for
-    /// none, `u64::MAX` for malformed (which any log reports as unknown).
-    pub fn since(self) -> u64 {
+    /// The cursor, when there is one.
+    pub fn cursor(&self) -> Option<&Cursor> {
         match self {
-            Resume::None => 0,
-            Resume::Since(n) => n,
-            Resume::Malformed => u64::MAX,
-        }
-    }
-
-    /// Inverse of [`Resume::since`].
-    pub fn from_since(n: u64) -> Self {
-        match n {
-            0 => Resume::None,
-            u64::MAX => Resume::Malformed,
-            n => Resume::Since(n),
+            Resume::Since(c) => Some(c),
+            Resume::None | Resume::Invalid => None,
         }
     }
 }
 
-/// The first `key=value` pair in a query string, without percent-decoding
-/// (a sequence number has nothing to decode; anything else is malformed).
+/// The first `key=value` pair in a query string, without percent-decoding:
+/// a cursor's alphabet has nothing to decode, and anything else is not a
+/// cursor.
 fn query_value<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     query.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -88,12 +76,16 @@ mod tests {
         h
     }
 
+    fn since(token: &str) -> Resume {
+        Resume::Since(Cursor::parse(token).unwrap())
+    }
+
     #[test]
     fn header_then_query_then_none() {
-        assert_eq!(Resume::parse(&headers(Some("42")), None), Resume::Since(42));
+        assert_eq!(Resume::parse(&headers(Some("g-42")), None), since("g-42"));
         assert_eq!(
-            Resume::parse(&headers(None), Some("a=1&last_event_id=7&b=2")),
-            Resume::Since(7)
+            Resume::parse(&headers(None), Some("a=1&last_event_id=g-7&b=2")),
+            since("g-7")
         );
         assert_eq!(Resume::parse(&headers(None), Some("a=1")), Resume::None);
         assert_eq!(Resume::parse(&headers(None), None), Resume::None);
@@ -103,41 +95,37 @@ mod tests {
     fn header_wins_over_query() {
         assert_eq!(
             Resume::parse(&headers(Some("9")), Some("last_event_id=1")),
-            Resume::Since(9)
+            since("9")
         );
     }
 
     #[test]
-    fn zero_and_empty_are_none_and_garbage_is_malformed() {
-        assert_eq!(Resume::parse(&headers(Some("0")), None), Resume::None);
+    fn empty_is_none_and_a_non_token_is_invalid() {
+        assert_eq!(Resume::parse(&headers(Some("  ")), None), Resume::None);
         assert_eq!(
             Resume::parse(&headers(Some("  ")), Some("last_event_id=3")),
-            Resume::Since(3)
+            since("3")
+        );
+        assert_eq!(Resume::parse(&headers(Some("a b")), None), Resume::Invalid);
+        assert_eq!(
+            Resume::parse(&headers(None), Some("last_event_id=%2F")),
+            Resume::Invalid
         );
         assert_eq!(
-            Resume::parse(&headers(Some("abc")), None),
-            Resume::Malformed
+            Resume::parse(&headers(Some(&"x".repeat(129))), None),
+            Resume::Invalid
         );
-        assert_eq!(
-            Resume::parse(&headers(None), Some("last_event_id=-1")),
-            Resume::Malformed
-        );
-    }
-
-    #[test]
-    fn wire_round_trip() {
-        for r in [Resume::None, Resume::Since(5), Resume::Malformed] {
-            assert_eq!(Resume::from_since(r.since()), r);
-        }
+        assert_eq!(since("g-1").cursor().map(Cursor::as_str), Some("g-1"));
+        assert_eq!(Resume::Invalid.cursor(), None);
     }
 
     #[test]
     fn from_parts_reads_uri_query() {
         let req = http::Request::builder()
-            .uri("/v1/screens/a/stream?last_event_id=11")
+            .uri("/v1/screens/a/stream?last_event_id=g-11")
             .body(())
             .unwrap();
         let (parts, _) = req.into_parts();
-        assert_eq!(Resume::from_parts(&parts), Resume::Since(11));
+        assert_eq!(Resume::from_parts(&parts), since("g-11"));
     }
 }

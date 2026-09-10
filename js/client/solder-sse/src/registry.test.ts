@@ -466,8 +466,8 @@ describe('resume', () => {
 		const onResync = vi.fn();
 		sub('/r4', { onResync });
 		FakeEventSource.last().message('tick', 1, '77');
-		FakeEventSource.last().message('resync', { reason: 'expired', earliest_seq: 90 });
-		expect(onResync).toHaveBeenCalledWith({ reason: 'expired', earliestSeq: 90 });
+		FakeEventSource.last().message('resync', { reason: 'expired', earliest: 'g-90' });
+		expect(onResync).toHaveBeenCalledWith({ reason: 'expired', earliest: 'g-90' });
 		expect(solder.inspect('/r4')?.lastEventId).toBeNull();
 		FakeEventSource.last().die();
 		vi.advanceTimersByTime(1_000);
@@ -483,7 +483,7 @@ describe('resume', () => {
 		const resumed = FakeEventSource.last();
 		expect(resumed.url).toBe(abs('/r6?last_event_id=2'));
 		resumed.open();
-		resumed.message('resync', { reason: 'expired', earliest_seq: 9 });
+		resumed.message('resync', { reason: 'expired', earliest: 'g-9' });
 		vi.advanceTimersByTime(1_000);
 		resumed.drop();
 		expect(resumed.closed).toBe(true);
@@ -496,7 +496,7 @@ describe('resume', () => {
 		sub('/r7', {});
 		const first = FakeEventSource.last();
 		first.open();
-		first.message('resync', { reason: 'unknown', earliest_seq: 0 });
+		first.message('resync', { reason: 'unknown', earliest: null });
 		vi.advanceTimersByTime(1_000);
 		first.drop();
 		expect(first.closed).toBe(false);
@@ -541,7 +541,7 @@ describe('reconnect edge', () => {
 		expect(onReconnect).toHaveBeenCalledTimes(2);
 		expect(onReconnect).toHaveBeenLastCalledWith(true);
 		// a resync dropped the cursor: the reopen after it is fresh again
-		FakeEventSource.last().message('resync', { reason: 'unknown', earliest_seq: 0 });
+		FakeEventSource.last().message('resync', { reason: 'unknown', earliest: null });
 		FakeEventSource.last().die();
 		vi.advanceTimersByTime(1_000);
 		FakeEventSource.last().open();

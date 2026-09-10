@@ -14,8 +14,14 @@ pub struct Frame {
     pub name: Option<String>,
     /// Joined `data:` lines (the trailing newline removed).
     pub data: String,
-    /// The last event id in force when this frame was dispatched.
+    /// The last event id in force when this frame was dispatched — what a
+    /// reconnect would send. A frame without an `id:` line inherits it.
     pub id: Option<String>,
+    /// The `id:` line this frame itself carried: `None` when it carried
+    /// none (a snapshot, a `ping`), `Some("")` when it reset the cursor
+    /// (`resync`), otherwise the cursor it set. What the profile's rules
+    /// are about, and what [`Frame::id`] cannot tell.
+    pub own_id: Option<String>,
 }
 
 /// What a chunk of bytes produced.
@@ -125,8 +131,13 @@ impl Parser {
     }
 
     fn dispatch(&mut self, out: &mut Vec<Parsed>) {
-        if let Some(id) = self.pending_id.take() {
-            self.last_event_id = if id.is_empty() { None } else { Some(id) };
+        let own_id = self.pending_id.take();
+        if let Some(id) = &own_id {
+            self.last_event_id = if id.is_empty() {
+                None
+            } else {
+                Some(id.clone())
+            };
         }
         let event = self.event.take();
         if self.data.is_empty() {
@@ -138,6 +149,7 @@ impl Parser {
             name: event,
             data,
             id: self.last_event_id.clone(),
+            own_id,
         }));
     }
 }
@@ -160,12 +172,14 @@ mod tests {
                 Parsed::Event(Frame {
                     name: Some("tick".into()),
                     data: "a\nb".into(),
-                    id: None
+                    id: None,
+                    own_id: None
                 }),
                 Parsed::Event(Frame {
                     name: None,
                     data: "plain".into(),
-                    id: None
+                    id: None,
+                    own_id: None
                 }),
             ]
         );
@@ -174,12 +188,19 @@ mod tests {
     #[test]
     fn id_persists_across_frames_and_an_empty_id_resets_it() {
         let mut p = Parser::new();
-        events(&mut p, "id: 7\nevent: a\ndata: x\n\n");
+        let out = events(&mut p, "id: 7\nevent: a\ndata: x\n\n");
         assert_eq!(p.last_event_id(), Some("7"));
+        assert!(matches!(&out[0], Parsed::Event(f) if f.own_id.as_deref() == Some("7")));
+        // The next frame inherits the cursor but carried no id line itself.
         let out = events(&mut p, "event: b\ndata: y\n\n");
-        assert!(matches!(&out[0], Parsed::Event(f) if f.id.as_deref() == Some("7")));
-        events(&mut p, "id: \nevent: resync\ndata: {}\n\n");
+        assert!(
+            matches!(&out[0], Parsed::Event(f) if f.id.as_deref() == Some("7") && f.own_id.is_none())
+        );
+        let out = events(&mut p, "id: \nevent: resync\ndata: {}\n\n");
         assert_eq!(p.last_event_id(), None);
+        assert!(
+            matches!(&out[0], Parsed::Event(f) if f.id.is_none() && f.own_id.as_deref() == Some(""))
+        );
         // an id-only frame still moves the cursor; a NUL is ignored
         events(&mut p, "id: 9\n\n");
         assert_eq!(p.last_event_id(), Some("9"));
@@ -213,7 +234,8 @@ mod tests {
             vec![Parsed::Event(Frame {
                 name: Some("a".into()),
                 data: "1".into(),
-                id: None
+                id: None,
+                own_id: None
             })]
         );
     }

@@ -73,7 +73,7 @@ let mut sub = solder_sse_client::subscribe(reqwest::Client::new(), url, Options:
 while let Some(msg) = sub.recv().await {
     match msg {
         Message::Event(frame) => { /* frame.name, frame.data, frame.id */ }
-        Message::Resync { .. } => reload_snapshot().await,
+        Message::Resync(_) => reload_snapshot().await,
         Message::Status(_) | Message::Ping => {}
     }
 }

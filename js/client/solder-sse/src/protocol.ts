@@ -3,13 +3,14 @@
 
 /** Keep-alive event. Carries no id, so it never moves the resume cursor;
  * its presence tells the client the server supports the profile. Its body
- * MAY carry the server's interval in seconds — `{"every":15}` (v1.1) — from
- * which the client derives its dead-man window, and the lifetime after
- * which the server ends a healthy stream on purpose — `"max_age":30`
- * (v1.2, rotation) — which is information only. */
+ * carries the server's interval in seconds — `{"every":15}` — from which
+ * the client derives its dead-man window, and, when the server rotates
+ * streams, the lifetime after which it ends a healthy one on purpose —
+ * `"max_age":30` — which is information only. */
 export const PING = 'ping';
 /** Sent once after connect when the server could not replay from the
- * client's cursor. `data` is `{"reason":"expired"|"unknown","earliest_seq":N}`. */
+ * client's cursor. `data` is
+ * `{"reason":"expired"|"unknown","earliest":"<cursor>"|null}`. */
 export const RESYNC = 'resync';
 /** Query parameter carrying the cursor when a client cannot set the
  * `Last-Event-ID` header (a fresh `new EventSource(url)`). */
@@ -24,29 +25,31 @@ export function withResume(url: string, query: string, lastEventId: string): str
 /** What the server said when it could not replay from the cursor. */
 export interface ResyncInfo {
 	reason: 'expired' | 'unknown' | (string & {});
-	earliestSeq: number | null;
+	/** The oldest cursor the server still holds, when it named one. A
+	 * cursor is opaque: this is for a log line, not for arithmetic. */
+	earliest: string | null;
 }
 
 /** A `resync` body; a malformed one is still a resync of unknown reason. */
 export function parseResync(data: string): ResyncInfo {
 	try {
-		const parsed = JSON.parse(data) as { reason?: unknown; earliest_seq?: unknown };
+		const parsed = JSON.parse(data) as { reason?: unknown; earliest?: unknown };
 		return {
 			reason: typeof parsed.reason === 'string' ? parsed.reason : 'unknown',
-			earliestSeq: typeof parsed.earliest_seq === 'number' ? parsed.earliest_seq : null
+			earliest:
+				typeof parsed.earliest === 'string' && parsed.earliest !== '' ? parsed.earliest : null
 		};
 	} catch {
-		return { reason: 'unknown', earliestSeq: null };
+		return { reason: 'unknown', earliest: null };
 	}
 }
 
-/** What a `ping` body announces, in ms; null where it announces nothing
- * (profile v1 sends `{}`). */
+/** What a `ping` body announces, in ms; null where it announces nothing. */
 export interface PingHints {
-	/** The keep-alive interval (v1.1) — the dead-man window follows it. */
+	/** The keep-alive interval — the dead-man window follows it. */
 	everyMs: number | null;
-	/** The rotation age (v1.2): the server ends a healthy stream on purpose
-	 * after about this long. Information only — the reconnect policy already
+	/** The rotation age: the server ends a healthy stream on purpose after
+	 * about this long. Information only — the reconnect policy already
 	 * reopens a cut healthy stream at once. */
 	maxAgeMs: number | null;
 }
@@ -75,7 +78,8 @@ export interface Frame {
 	readonly name: string;
 	readonly data: string;
 	/** The cursor in force when this frame arrived (the browser's own
-	 * `lastEventId`, kept across frames that carry no id). */
+	 * `lastEventId`, kept across frames that carry no id). Opaque: the
+	 * server issued it and only the server can read it. */
 	readonly lastEventId: string | null;
 	json<T = unknown>(): T;
 }

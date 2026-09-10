@@ -1,10 +1,10 @@
-//! axum adapter for [`solder_sse`].
+//! axum adapter for [`solder_sse_server`].
 //!
 //! Two newtypes, because Rust's orphan rule forbids implementing axum's
 //! traits for `solder_sse`'s types from a third crate:
 //!
-//! * [`Resume`] — an extractor; `Deref`s to [`solder_sse::Resume`].
-//! * [`Sse`] — wraps a built [`solder_sse::SseResponse`] as `IntoResponse`.
+//! * [`Resume`] — an extractor; `Deref`s to [`solder_sse_server::Resume`].
+//! * [`Sse`] — wraps a built [`solder_sse_server::SseResponse`] as `IntoResponse`.
 //!
 //! ```ignore
 //! async fn stream(Resume(resume): Resume, State(app): State<App>) -> Response {
@@ -18,7 +18,6 @@
 
 use axum_core::extract::FromRequestParts;
 use axum_core::response::{IntoResponse, Response};
-use bytes::Bytes;
 use futures_core::Stream;
 use http::request::Parts;
 use solder_sse::Event;
@@ -28,17 +27,17 @@ use std::time::Duration;
 
 /// Extractor: the client's resume cursor from `Last-Event-ID` or
 /// `?last_event_id=`. Never rejects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resume(pub solder_sse::Resume);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resume(pub solder_sse_server::Resume);
 
 impl Deref for Resume {
-    type Target = solder_sse::Resume;
+    type Target = solder_sse_server::Resume;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl From<Resume> for solder_sse::Resume {
+impl From<Resume> for solder_sse_server::Resume {
     fn from(r: Resume) -> Self {
         r.0
     }
@@ -48,12 +47,12 @@ impl<S: Send + Sync> FromRequestParts<S> for Resume {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Infallible> {
-        Ok(Resume(solder_sse::Resume::from_parts(parts)))
+        Ok(Resume(solder_sse_server::Resume::from_parts(parts)))
     }
 }
 
 /// A resumable SSE response as an axum response.
-pub struct Sse<S>(pub solder_sse::SseResponse<S>);
+pub struct Sse<S>(pub solder_sse_server::SseResponse<S>);
 
 impl<S, E> IntoResponse for Sse<S>
 where
@@ -67,14 +66,12 @@ where
 
 /// The 503 + `Retry-After` response for "cannot open the stream now".
 pub fn unavailable(retry_after: Duration) -> Response {
-    solder_sse::unavailable(retry_after).map(axum_core::body::Body::new)
+    solder_sse_server::unavailable(retry_after).map(axum_core::body::Body::new)
 }
 
-/// Re-export so an adapter user needs one `use`.
+/// Re-exports so an adapter user needs one `use`.
 pub use solder_sse;
-
-#[allow(dead_code)]
-fn _assert_bytes_data(_: Bytes) {}
+pub use solder_sse_server;
 
 #[cfg(test)]
 mod tests {
@@ -86,10 +83,14 @@ mod tests {
     use tower::ServiceExt;
 
     async fn handler(Resume(resume): Resume) -> Response {
-        let events = stream::iter(vec![Ok::<_, Infallible>(
-            Event::named("cursor").data(format!("{}", resume.since())),
-        )]);
-        Sse(solder_sse::SseResponseBuilder::new()
+        let events = stream::iter(vec![Ok::<_, Infallible>(Event::named("cursor").data(
+            match &resume {
+                solder_sse_server::Resume::Since(c) => c.as_str().to_owned(),
+                solder_sse_server::Resume::None => "none".to_owned(),
+                solder_sse_server::Resume::Invalid => "invalid".to_owned(),
+            },
+        ))]);
+        Sse(solder_sse_server::SseResponseBuilder::new()
             .no_retry()
             .no_keep_alive()
             .build(events))
@@ -103,8 +104,8 @@ mod tests {
             .clone()
             .oneshot(
                 http::Request::builder()
-                    .uri("/s?last_event_id=5")
-                    .header("last-event-id", "9")
+                    .uri("/s?last_event_id=g-5")
+                    .header("last-event-id", "g-9")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -113,22 +114,22 @@ mod tests {
         assert_eq!(res.status(), 200);
         assert_eq!(
             res.headers()["content-type"],
-            solder_sse::response::CONTENT_TYPE_VALUE
+            solder_sse_server::response::CONTENT_TYPE_VALUE
         );
         let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "event: cursor\ndata: 9\n\n");
+        assert_eq!(body, "event: cursor\ndata: g-9\n\n");
 
         let res = app
             .oneshot(
                 http::Request::builder()
-                    .uri("/s?last_event_id=5")
+                    .uri("/s?last_event_id=g-5")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "event: cursor\ndata: 5\n\n");
+        assert_eq!(body, "event: cursor\ndata: g-5\n\n");
     }
 
     #[tokio::test]
