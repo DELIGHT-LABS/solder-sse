@@ -9,7 +9,10 @@
 		"strict": true,
 		"skipLibCheck": true,
 		"lib": ["ES2022", "DOM"],
-		"types": ["node"]
+		"types": ["node"],
+		"paths": {
+			"solder-sse": ["./client/solder-sse/src/index.ts"]
+		}
 	},
 	"include": ["client/*/src", "vitest.config.ts"],
 	"exclude": ["client/*/dist"]

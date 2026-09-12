@@ -26,4 +26,5 @@ The subscription lives while the owner does and the URL accessor is non-null; a 
 unsubscribes and subscribes again (the registry keeps the old source lingering, so a hop back
 re-attaches without a reconnect). Uses Solid 2.0's two-phase `createEffect`, whose apply
 return value is the cleanup.
-\n\nLicense: MIT or Apache-2.0, at your option.\n
+
+License: MIT or Apache-2.0, at your option.

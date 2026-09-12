@@ -89,6 +89,10 @@ and dead-man features simply stay dormant.
 
 ## Building
 
-`exports` serve the TypeScript source under the `development` condition (Vite dev, Vitest)
-and `dist/` otherwise; `npm run build` in this package emits `dist/` with declarations.
-\n\nLicense: MIT or Apache-2.0, at your option.\n
+The package ships `dist/` only: ES modules, declarations and source maps from `npm run build`
+(`src/` rides along for the maps). A consumer never compiles this package's TypeScript under its
+own settings. Inside the repository the root tsconfig's `paths` and a vitest alias resolve
+`solder-sse` to its source, so checking, linting and testing need no build; `tsconfig.build.json`
+is for emitting `dist/`.
+
+License: MIT or Apache-2.0, at your option.
