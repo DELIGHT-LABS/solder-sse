@@ -1,0 +1,5 @@
+retry: 750
+
+event: ping
+data: {"every":15}
+

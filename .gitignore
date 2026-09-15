@@ -1,0 +1,11 @@
+# Rust
+rust/target/
+
+# JavaScript
+js/node_modules/
+js/client/*/node_modules/
+js/client/*/dist/
+
+# editors / OS
+.DS_Store
+*.log

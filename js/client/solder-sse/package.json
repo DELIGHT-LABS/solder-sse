@@ -1,0 +1,38 @@
+{
+	"name": "solder-sse",
+	"version": "0.1.0",
+	"description": "Drop-tolerant, resumable Server-Sent Events client: shared connections, watchdog with jittered backoff, eager reconnect, dead-man ping, Last-Event-ID resume, resync — framework-agnostic.",
+	"license": "(MIT OR Apache-2.0)",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/DELIGHT-LABS/solder-sse.git",
+		"directory": "js/client/solder-sse"
+	},
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"src",
+		"!src/**/*.test.ts",
+		"README.md",
+		"LICENSE-MIT",
+		"LICENSE-APACHE"
+	],
+	"keywords": [
+		"sse",
+		"server-sent-events",
+		"eventsource",
+		"resumable",
+		"reconnect"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	}
+}

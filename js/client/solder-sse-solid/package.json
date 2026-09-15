@@ -1,0 +1,42 @@
+{
+	"name": "solder-sse-solid",
+	"version": "0.1.0",
+	"description": "SolidJS 2.0 adapter for solder-sse: owner-bound subscriptions with a reactive status.",
+	"license": "(MIT OR Apache-2.0)",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/DELIGHT-LABS/solder-sse.git",
+		"directory": "js/client/solder-sse-solid"
+	},
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"src",
+		"!src/**/*.test.ts",
+		"README.md",
+		"LICENSE-MIT",
+		"LICENSE-APACHE"
+	],
+	"peerDependencies": {
+		"solid-js": ">=2.0.0-rc.0",
+		"solder-sse": "*"
+	},
+	"keywords": [
+		"sse",
+		"solid",
+		"solidjs",
+		"eventsource",
+		"resumable"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	}
+}

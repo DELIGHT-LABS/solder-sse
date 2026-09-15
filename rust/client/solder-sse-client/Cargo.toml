@@ -1,0 +1,33 @@
+[package]
+name = "solder-sse-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A resumable SSE client on reqwest: Last-Event-ID resume, retry hints, jittered backoff, dead-man ping, resync, the server's hints — the client half of the solder-sse profile for Rust programs"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["sse", "server-sent-events", "eventsource", "client", "resumable"]
+categories = ["web-programming::http-client", "asynchronous"]
+
+[features]
+default = ["http2"]
+# HTTP/2 for the streams, negotiated by ALPN whenever the client's TLS allows
+# it. A rotation then ends a stream, not the connection: the reopen skips the
+# TCP and TLS handshakes. Off, the client speaks HTTP/1.1 only.
+http2 = ["reqwest/http2"]
+
+[dependencies]
+solder-sse.workspace = true
+futures-util.workspace = true
+http.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+tracing.workspace = true
+
+[dev-dependencies]
+solder-sse-testkit = { path = "../../server/solder-sse-testkit" }
+reqwest = { workspace = true, features = ["rustls"] }
+tokio = { workspace = true, features = ["full"] }
