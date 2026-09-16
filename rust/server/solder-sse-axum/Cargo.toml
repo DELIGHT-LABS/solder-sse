@@ -1,0 +1,25 @@
+[package]
+name = "solder-sse-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "axum adapter for solder-sse: a Resume extractor and an IntoResponse for resumable SSE"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["sse", "server-sent-events", "axum", "resumable"]
+categories = ["web-programming"]
+
+[dependencies]
+solder-sse.workspace = true
+solder-sse-server.workspace = true
+axum-core.workspace = true
+futures-core.workspace = true
+http.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower.workspace = true
